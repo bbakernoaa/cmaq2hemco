@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 from cmaq2hemco.mp2022 import open_gdemis, open_ptemis
-from cmaq2hemco.utils import pt2hemco, gd2hemco_fast
+from cmaq2hemco.utils import pt2hemco, gd2hemco
 from cmaq2hemco.mechrc.cb6r5_ae7_aq import writeconfig
 
 debug = True
@@ -54,11 +54,6 @@ if debug:
     print(pkeys)
     print(gkeys)
 
-# if not os.path.exists('epa2022v1/matrix.csv'):
-#     gf = open_gdemis(dates[0], gkeys[0])
-#     mdf = gd2matrix(gf, elat, elon)
-#     mdf.drop('geometry', axis=1).to_csv('epa2022v1/matrix.csv')
-# matrix = pd.read_csv('epa2022v1/matrix.csv', index_col=['ROW', 'COL', 'lati', 'loni'])
 for date in dates:
     for gkey in gkeys:
         outpath = f"epa2022v1/{gkey}/{gkey}_{date:%Y-%m-%d}_epa2022v1_hc_22m.nc"
@@ -72,10 +67,8 @@ for date in dates:
         except Exception as e:
             print(f"**WARNING:: Skipping {date} {gkey}: {e}")
             continue
-        # using bilinear interpolation of fluxes
-        rgf = gd2hemco_fast(outpath, gf, elat, elon)
-        # use matrix interpolation for fractional area overlap (slow)
-        # rgf = gd2hemco(outpath, gf, elat, elon, matrix=matrix)
+        # using xregrid conservative regridding
+        rgf = gd2hemco(outpath, gf, elat, elon, method="conservative")
         del rgf, gf
 
     for pkey in pkeys:

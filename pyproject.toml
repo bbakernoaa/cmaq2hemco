@@ -43,5 +43,5 @@ test = [
 ]
 
 [tool.setuptools]
-packages = ["cmaq2hemco"]
+packages = {find = {}}
 include-package-data = true
