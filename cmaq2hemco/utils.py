@@ -700,7 +700,7 @@ def regrid_dataset(
 
 def gd2hemco(
     path: str,
-    gf: xr.Dataset,
+    gf: Union[str, xr.Dataset],
     elat: np.ndarray,
     elon: np.ndarray,
     method: str = "conservative",
@@ -735,6 +735,9 @@ def gd2hemco(
     outf : hemcofile
         HEMCO file object.
     """
+    if isinstance(gf, str):
+        gf = xr.open_dataset(gf)
+
     if "lat" not in gf or "lon" not in gf:
         gf = gd_file(gf)
 
@@ -861,10 +864,20 @@ def _add_bounds_to_cmaq(ds: xr.Dataset) -> xr.Dataset:
     y = ds.ROW
     dx = ds.attrs.get("XCELL", 12000.0)
     dy = ds.attrs.get("YCELL", 12000.0)
+    xorig = ds.attrs.get("XORIG", 0.0)
+    yorig = ds.attrs.get("YORIG", 0.0)
+
+    # Reconstruct projected coordinates if x and y look like indices
+    if x.data[0] < 1000 and x.data.max() < 10000:
+        x_data = xorig + (x.data + 0.5) * dx
+        y_data = yorig + (y.data + 0.5) * dy
+    else:
+        x_data = x.data
+        y_data = y.data
 
     # Edge coordinates in projected space
-    xe = np.linspace(x.data[0] - dx / 2, x.data[-1] + dx / 2, len(x) + 1)
-    ye = np.linspace(y.data[0] - dy / 2, y.data[-1] + dy / 2, len(y) + 1)
+    xe = np.linspace(x_data[0] - dx / 2, x_data[-1] + dx / 2, len(x) + 1)
+    ye = np.linspace(y_data[0] - dy / 2, y_data[-1] + dy / 2, len(y) + 1)
 
     XE, YE = np.meshgrid(xe, ye)
     LONE, LATE = proj(XE, YE, inverse=True)
@@ -1563,8 +1576,24 @@ def gd_file(ef: xr.Dataset) -> xr.Dataset:
         if crs is None:
             crs = _ioapi_crs(ef.attrs)
         proj = pyproj.Proj(crs)
-        Y, X = xr.broadcast(ef.ROW, ef.COL)
-        LON, LAT = proj(X.data, Y.data, inverse=True)
+
+        x = ef.COL
+        y = ef.ROW
+        dx = ef.attrs.get("XCELL", 12000.0)
+        dy = ef.attrs.get("YCELL", 12000.0)
+        xorig = ef.attrs.get("XORIG", 0.0)
+        yorig = ef.attrs.get("YORIG", 0.0)
+
+        # Reconstruct projected coordinates if x and y look like indices
+        if x.data[0] < 1000 and x.data.max() < 10000:
+            x_data = xorig + (x.data + 0.5) * dx
+            y_data = yorig + (y.data + 0.5) * dy
+        else:
+            x_data = x.data
+            y_data = y.data
+
+        Y, X = np.meshgrid(y_data, x_data, indexing="ij")
+        LON, LAT = proj(X, Y, inverse=True)
         ef["lon"] = (
             ("ROW", "COL"),
             LON,
