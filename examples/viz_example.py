@@ -21,9 +21,15 @@ def run_viz_example():
     )
     ds["lon"] = (("ROW", "COL"), LON, {"units": "degrees_east"})
     ds["lat"] = (("ROW", "COL"), LAT, {"units": "degrees_north"})
-    ds.attrs["crs"] = (
-        "+proj=lcc +lat_1=33 +lat_2=45 +lat_0=40 +lon_0=-97 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs"
-    )
+    # Instead of explicit 'crs' attribute, use IOAPI metadata
+    ds.attrs["GDTYP"] = 2
+    ds.attrs["P_ALP"] = 33.0
+    ds.attrs["P_BET"] = 45.0
+    ds.attrs["P_GAM"] = -97.0
+    ds.attrs["XCENT"] = -97.0
+    ds.attrs["YCENT"] = 40.0
+    ds.attrs["XORIG"] = -1000000.0
+    ds.attrs["YORIG"] = -1000000.0
     ds.attrs["XCELL"] = 50000.0
     ds.attrs["YCELL"] = 50000.0
     ds = _add_bounds_to_cmaq(ds)
