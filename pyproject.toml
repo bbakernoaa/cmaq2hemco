@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cmaq2hemco"
+version = "0.1.1"
+authors = [
+  { name="Barron H. Henderson", email="barronh@gmail.com" },
+]
+description = "Utilities for converting CMAQ-ready emissions to HEMCO supported files."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Development Status :: 4 - Beta",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pyproj",
+    "pandas",
+    "xarray",
+    "requests",
+    "cmaqsatproc",
+    "netcdf4",
+    "xregrid @ git+https://github.com/bbakernoaa/xregrid.git",
+]
+
+[project.optional-dependencies]
+aws = [
+    "boto3",
+]
+viz = [
+    "matplotlib",
+    "cartopy",
+    "hvplot",
+    "geoviews",
+]
+test = [
+    "pytest",
+    "dask",
+]
+
+[tool.setuptools]
+packages = ["cmaq2hemco"]
+include-package-data = true

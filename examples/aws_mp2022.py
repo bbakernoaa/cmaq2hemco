@@ -2,11 +2,11 @@ import pandas as pd
 import numpy as np
 import os
 from cmaq2hemco.mp2022 import open_gdemis, open_ptemis
-from cmaq2hemco.utils import pt2hemco, gd2hemco, gd2matrix, gd2hemco_fast
+from cmaq2hemco.utils import pt2hemco, gd2hemco_fast
 from cmaq2hemco.mechrc.cb6r5_ae7_aq import writeconfig
 
 debug = True
-dates = pd.date_range('2022-01-01', '2022-12-31', freq='d')
+dates = pd.date_range("2022-01-01", "2022-12-31", freq="d")
 # Define grid by edges
 elat = np.linspace(15, 65, 501)
 elon = np.linspace(-135, -50, 851)
@@ -46,10 +46,10 @@ pt_oilgas
 ptnonipm""".split()
 
 if debug:
-    dates = pd.to_datetime(['2022-07-12'])
+    dates = pd.to_datetime(["2022-07-12"])
     # pkeys = pkeys[:1]
     # gkeys = gkeys[:1]
-    print('**WARNING: in debug mode; only processing')
+    print("**WARNING: in debug mode; only processing")
     print(dates)
     print(pkeys)
     print(gkeys)
@@ -61,9 +61,7 @@ if debug:
 # matrix = pd.read_csv('epa2022v1/matrix.csv', index_col=['ROW', 'COL', 'lati', 'loni'])
 for date in dates:
     for gkey in gkeys:
-        outpath = (
-            f'epa2022v1/{gkey}/{gkey}_{date:%Y-%m-%d}_epa2022v1_hc_22m.nc'
-        )
+        outpath = f"epa2022v1/{gkey}/{gkey}_{date:%Y-%m-%d}_epa2022v1_hc_22m.nc"
         if os.path.exists(outpath):
             continue
         print(date, gkey)
@@ -72,18 +70,16 @@ for date in dates:
             # open_gdemis could fail if date is not available (eg., only weekday)
             gf = open_gdemis(date, gkey)
         except Exception as e:
-            print(f'**WARNING:: Skipping {date} {gkey}: {e}')
+            print(f"**WARNING:: Skipping {date} {gkey}: {e}")
             continue
         # using bilinear interpolation of fluxes
         rgf = gd2hemco_fast(outpath, gf, elat, elon)
         # use matrix interpolation for fractional area overlap (slow)
         # rgf = gd2hemco(outpath, gf, elat, elon, matrix=matrix)
         del rgf, gf
-    
+
     for pkey in pkeys:
-        outpath = (
-            f'epa2022v1/{pkey}/{pkey}_{date:%Y-%m-%d}_epa2022v1_hc_22m.nc'
-        )
+        outpath = f"epa2022v1/{pkey}/{pkey}_{date:%Y-%m-%d}_epa2022v1_hc_22m.nc"
         if os.path.exists(outpath):
             continue
         print(date, pkey)
@@ -92,13 +88,13 @@ for date in dates:
             # open_ptemis could fail if date is not available (eg., only weekday)
             pf = open_ptemis(date, pkey)
         except IOError as e:
-            print(f'**WARNING:: Skipping {date} {pkey}: {e}')
+            print(f"**WARNING:: Skipping {date} {pkey}: {e}")
             continue
         rpf = pt2hemco(outpath, pf, elat, elon)  # apply plume rise
         del rpf, pf
 
 
 for sector in gkeys + pkeys:
-    hcpath = f'epa2022v1/{sector}/HEMCO_{sector}.rc'
-    secttmpl = f'epa2022v1/{sector}/{sector}_%Y-%m-%d_epa2022v1_hc_22m.nc'
+    hcpath = f"epa2022v1/{sector}/HEMCO_{sector}.rc"
+    secttmpl = f"epa2022v1/{sector}/{sector}_%Y-%m-%d_epa2022v1_hc_22m.nc"
     writeconfig(hcpath, 2022, sector, secttmpl)
