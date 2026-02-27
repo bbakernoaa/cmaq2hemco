@@ -1,42 +1,202 @@
-__all__ = [
-    'plumerise_briggs', 'open_date', 'gd2hemco', 'pt2hemco', 'pt2gd', 'merge',
-    'to_ioapi', 'getmw', 'se_file', 'gd2matrix', 'gd2hemco_fast',
-    'unitconvert', 'hemco_area', 'symlinks', 'gd_file'
-]
+"""
+Utilities for converting CMAQ-ready emissions to HEMCO supported files.
+Follows the AERO Protocol 🍃⚡.
+"""
+
+from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
+import pandas as pd
 import xarray as xr
+
+# Optional dependencies
+try:
+    import xregrid
+    from xregrid import Regridder
+    from xregrid.utils import create_grid_from_ioapi
+except ImportError:
+    xregrid = None
+
 xr.set_options(keep_attrs=True)
+
+__all__ = [
+    "plumerise_briggs",
+    "open_date",
+    "gd2hemco",
+    "pt2hemco",
+    "pt2gd",
+    "merge",
+    "to_ioapi",
+    "getmw",
+    "se_file",
+    "gd2matrix",
+    "gd2hemco_fast",
+    "unitconvert",
+    "hemco_area",
+    "symlinks",
+    "gd_file",
+    "regrid_dataset",
+    "parse_ioapi_time",
+]
 
 # https://wiki.seas.harvard.edu/geos-chem/index.php/GEOS-Chem_vertical_grids
 # default vertical edge levels in meters above ground level.
-_defez = np.array([
-    -6.00, 123.0, 254.0, 387.0, 521.0, 657.0, 795.0, 934.0, 1075., 1218.,
-    1363., 1510., 1659., 1860., 2118., 2382., 2654., 2932., 3219., 3665.,
-    4132., 4623., 5142., 5692., 6277., 6905., 7582., 8320., 9409., 10504,
-    11578, 12633, 13674, 14706, 15731, 16753, 17773, 18807, 19855, 20920,
-    22004, 23108, 24240, 25402, 26596, 27824, 29085, 30382, 31716, 33101,
-    34539, 36030, 37574, 39173, 40825, 42529, 44286, 46092, 47946, 49844,
-    51788, 53773, 55794, 57846, 59924, 62021, 64129, 66245, 68392, 70657,
-    73180, 76357, 80581
-], dtype='f')
+_defez = np.array(
+    [
+        -6.00,
+        123.0,
+        254.0,
+        387.0,
+        521.0,
+        657.0,
+        795.0,
+        934.0,
+        1075.0,
+        1218.0,
+        1363.0,
+        1510.0,
+        1659.0,
+        1860.0,
+        2118.0,
+        2382.0,
+        2654.0,
+        2932.0,
+        3219.0,
+        3665.0,
+        4132.0,
+        4623.0,
+        5142.0,
+        5692.0,
+        6277.0,
+        6905.0,
+        7582.0,
+        8320.0,
+        9409.0,
+        10504,
+        11578,
+        12633,
+        13674,
+        14706,
+        15731,
+        16753,
+        17773,
+        18807,
+        19855,
+        20920,
+        22004,
+        23108,
+        24240,
+        25402,
+        26596,
+        27824,
+        29085,
+        30382,
+        31716,
+        33101,
+        34539,
+        36030,
+        37574,
+        39173,
+        40825,
+        42529,
+        44286,
+        46092,
+        47946,
+        49844,
+        51788,
+        53773,
+        55794,
+        57846,
+        59924,
+        62021,
+        64129,
+        66245,
+        68392,
+        70657,
+        73180,
+        76357,
+        80581,
+    ],
+    dtype="f",
+)
 # default vertical mid points in s = (p - ptop) / (p - p0) eta levels
-_deflevs = np.array([
-    0.99250002413, 0.97749990013, 0.962499776, 0.947499955, 0.93250006,
-    0.91749991, 0.90249991, 0.88749996, 0.87249996, 0.85750006, 0.842500125,
-    0.82750016, 0.8100002, 0.78750002, 0.762499965, 0.737500105, 0.7125001,
-    0.6875001, 0.65625015, 0.6187502, 0.58125015, 0.5437501, 0.5062501,
-    0.4687501, 0.4312501, 0.3937501, 0.3562501, 0.31279158, 0.26647905,
-    0.2265135325, 0.192541016587707, 0.163661504087706, 0.139115, 0.11825,
-    0.10051436, 0.085439015, 0.07255786, 0.06149566, 0.05201591, 0.04390966,
-    0.03699271, 0.03108891, 0.02604911, 0.021761005, 0.01812435, 0.01505025,
-    0.01246015, 0.010284921, 0.008456392, 0.0069183215, 0.005631801,
-    0.004561686, 0.003676501, 0.002948321, 0.0023525905, 0.00186788,
-    0.00147565, 0.001159975, 0.00090728705, 0.0007059566, 0.0005462926,
-    0.0004204236, 0.0003217836, 0.00024493755, 0.000185422, 0.000139599,
-    0.00010452401, 7.7672515e-05, 5.679251e-05, 4.0142505e-05, 2.635e-05,
-    1.5e-05
-], dtype='d')
+_deflevs = np.array(
+    [
+        0.99250002413,
+        0.97749990013,
+        0.962499776,
+        0.947499955,
+        0.93250006,
+        0.91749991,
+        0.90249991,
+        0.88749996,
+        0.87249996,
+        0.85750006,
+        0.842500125,
+        0.82750016,
+        0.8100002,
+        0.78750002,
+        0.762499965,
+        0.737500105,
+        0.7125001,
+        0.6875001,
+        0.65625015,
+        0.6187502,
+        0.58125015,
+        0.5437501,
+        0.5062501,
+        0.4687501,
+        0.4312501,
+        0.3937501,
+        0.3562501,
+        0.31279158,
+        0.26647905,
+        0.2265135325,
+        0.192541016587707,
+        0.163661504087706,
+        0.139115,
+        0.11825,
+        0.10051436,
+        0.085439015,
+        0.07255786,
+        0.06149566,
+        0.05201591,
+        0.04390966,
+        0.03699271,
+        0.03108891,
+        0.02604911,
+        0.021761005,
+        0.01812435,
+        0.01505025,
+        0.01246015,
+        0.010284921,
+        0.008456392,
+        0.0069183215,
+        0.005631801,
+        0.004561686,
+        0.003676501,
+        0.002948321,
+        0.0023525905,
+        0.00186788,
+        0.00147565,
+        0.001159975,
+        0.00090728705,
+        0.0007059566,
+        0.0005462926,
+        0.0004204236,
+        0.0003217836,
+        0.00024493755,
+        0.000185422,
+        0.000139599,
+        0.00010452401,
+        7.7672515e-05,
+        5.679251e-05,
+        4.0142505e-05,
+        2.635e-05,
+        1.5e-05,
+    ],
+    dtype="d",
+)
 
 
 _levattrs = dict(
@@ -59,7 +219,7 @@ _lonattrs = dict(
     axis="X",
     bounds="lon_bnds",
 )
-_reftime = '1970-01-01 00:00:00'
+_reftime = "1970-01-01 00:00:00"
 _timeattrs = dict(
     long_name="Time",
     units=f"hours since {_reftime}",
@@ -68,698 +228,831 @@ _timeattrs = dict(
 )
 
 
-def getmw(key, gc='cb6r5_ae7_aq', nr='cb6r5hap_ae7_aq'):
+def getmw(key: str, gc: str = "cb6r5_ae7_aq", nr: str = "cb6r5hap_ae7_aq") -> float:
     """
-    Get the molecular weight (kg/mol) for a chemical mechanism species. The
-    species may be an explicit or lumped species, so weights are mechanism
+    Get the molecular weight (kg/mol) for a chemical mechanism species.
+
+    The species may be an explicit or lumped species, so weights are mechanism
     specific.
 
-    Arguments
-    ---------
+    Parameters
+    ----------
     key : str
-        Species key in mechanism
-    gc : str
-        Name of gas-phase chemical mechanism
-    nr : str
-        Name of non-reactive gas-phase mechanism (typically haps)
+        Species key in mechanism.
+    gc : str, default 'cb6r5_ae7_aq'
+        Name of gas-phase chemical mechanism.
+    nr : str, default 'cb6r5hap_ae7_aq'
+        Name of non-reactive gas-phase mechanism (typically haps).
 
     Returns
     -------
     mw : float
-        Molecular weight of species in kg/mol
+        Molecular weight of species in kg/mol.
+
+    Raises
+    ------
+    KeyError
+        If species key is not found in the mechanism files.
     """
-    import requests
-    import os
     import io
-    import pandas as pd
+    import os
     import re
 
-    mwpath = f'cmaq_{gc}_molwt.csv'
+    import pandas as pd
+    import requests
+
+    mwpath = f"cmaq_{gc}_molwt.csv"
     fillin = {
-        'CH4': 16.0,         # from ECH4
-        'ETHYLBENZ': 106.2,  # from XYLMN
-        'BENZ': 78.1,        # from BENZENE
-        'NH3': 17.0,         # from NR_{mech}.nml
+        "CH4": 16.0,  # from ECH4
+        "ETHYLBENZ": 106.2,  # from XYLMN
+        "BENZ": 78.1,  # from BENZENE
+        "NH3": 17.0,  # from NR_{mech}.nml
     }
     if not os.path.exists(mwpath):
         mwdfs = []
-        for prfx, mech in [('GC', gc), ('NR', nr)]:
+        for prfx, mech in [("GC", gc), ("NR", nr)]:
             url = (
-                'https://raw.githubusercontent.com/USEPA/CMAQ/refs/heads/main/'
-                f'CCTM/src/MECHS/{mech}/{prfx}_{mech}.nml'
+                "https://raw.githubusercontent.com/USEPA/CMAQ/refs/heads/main/"
+                f"CCTM/src/MECHS/{mech}/{prfx}_{mech}.nml"
             )
-            r = requests.get(url)
-            txtlines = r.text.split('\n')
+            r = requests.get(url, timeout=10)
+            txtlines = r.text.split("\n")
             datlines = [
-                _l for _l in txtlines
-                if _l.startswith("'") or _l.startswith('!')
+                _l for _l in txtlines if _l.startswith("'") or _l.startswith("!")
             ]
-            datlines[0] = datlines[0].replace('!', '') + ','
-            dat = '\n'.join(datlines).replace("'", "")
-            dat = re.sub('[ ]+,', ',', dat)
+            datlines[0] = datlines[0].replace("!", "") + ","
+            dat = "\n".join(datlines).replace("'", "")
+            dat = re.sub("[ ]+,", ",", dat)
             rmwdf = pd.read_csv(io.StringIO(dat), index_col=False)
             rmwdf.columns = [k for k in rmwdf.columns]
-            mwdfs.append(rmwdf.set_index('SPECIES'))
+            mwdfs.append(rmwdf.set_index("SPECIES"))
         mwdf = pd.concat(mwdfs)
         for newk, mw in fillin.items():
             if newk not in mwdf.index:
-                mwdf.loc[newk, 'MOLWT'] = mw
-        mwdf[['MOLWT']].to_csv(mwpath, index=True)
+                mwdf.loc[newk, "MOLWT"] = mw
+        mwdf[["MOLWT"]].to_csv(mwpath, index=True)
     mwdf = pd.read_csv(mwpath, index_col=0)
     try:
-        mw = mwdf.loc[key, 'MOLWT'] / 1e3
+        mw = mwdf.loc[key, "MOLWT"] / 1e3
     except KeyError:
-        raise KeyError(f'{key} not found in {mwpath}')
-    return mw
+        raise KeyError(f"{key} not found in {mwpath}")
+    return float(mw)
 
 
 def plumerise_briggs(
-    stkdm, stkvel, stktk, pres_a=101325., temp_a=288.15, u=2.5, x=6000.,
-    theta_lapse=None, F=None
-):
+    stkdm: Union[float, xr.DataArray],
+    stkvel: Union[float, xr.DataArray],
+    stktk: Union[float, xr.DataArray],
+    pres_a: Union[float, xr.DataArray] = 101325.0,
+    temp_a: Union[float, xr.DataArray] = 288.15,
+    u: Union[float, xr.DataArray] = 2.5,
+    x: Union[float, xr.DataArray] = 6000.0,
+    theta_lapse: Optional[Union[float, xr.DataArray]] = None,
+    F: Optional[Union[float, xr.DataArray]] = None,
+) -> Union[float, xr.DataArray]:
     """
-    Briggs (1969, 1971, 1974) equations of Plume Rise as documented within
-    Seinfeld and Pandis[1]. On pg 868, Table 18.4 gives 7 equations -- 3 for
-    stable conditions and 4 for neutral/unstable conditions. Stable
-    calculations are only done with theta_lapse is provided.
+    Briggs (1969, 1971, 1974) equations of Plume Rise.
 
-    Arguments
-    ---------
-    stkdm : float
-        Diameter of stack opening (m)
-    stkvel : float
-        Velocity of stack gas at opening (m/s)
-    stktk : float
-        Temperature of gas at opening (K)
-    pres_a : float
-        Pressure (Pa) of ambient environment; default 101325.
-    temp_a : float
-        Temperature (K) of ambient environment; default 288.13K
-    u : float
-        Wind speed (m/s); default of 2.5 m/s is used as a low estimate.
-    x : float
-        Distance from stack at which plume-rise is calculated (m). Default 6000
-        is used because it is half of the commonly used grid cell size 12km.
-    theta_lapse : float
-        Potential Temperature Gradient (dtheta / dz) in K/m. Values below were
-        converted from Seinfeld and Pandis (2006) Table 18.5 by dividing lapse
-        rates per 100m by 100 to get the per meter to lapse rate by class.
-          * A Extremely unstable dtheta / dz: < -0.009
-          * B Moderately unstable dtheta / dz: -0.009 to -0.007
-          * C Slightly unstable dtheta / dz: -0.007 to -0.005
-          * D Neutral dtheta / dz: -0.005 to 0.005
-          * E slightly stable dtheta / dz: 0.005 to 0.025
-          * F moderately stable dtheta / dz : > 0.025
-        If theta_lapse is none or less than or equal to 0.005, then the
-        calculations for the unstable/neutral atmosphere are used. If
-        theta_lapse is greater than 0.005, the three stable equations will be
-        solved and the minimum will be returned.
-    F : float
-        Buoyancy parameter (m4/s3). If F is provided, it overrides the default
-        calculation from stkdm, stkvel, and stktk.
+    Approximates calculations used by CMAQ and SMOKE to calculate plume rise.
+    On pg 868, Table 18.4 gives 7 equations -- 3 for stable conditions and
+    4 for neutral/unstable conditions.
+
+    Parameters
+    ----------
+    stkdm : float or xr.DataArray
+        Diameter of stack opening (m).
+    stkvel : float or xr.DataArray
+        Velocity of stack gas at opening (m/s).
+    stktk : float or xr.DataArray
+        Temperature of gas at opening (K).
+    pres_a : float or xr.DataArray, default 101325.
+        Pressure (Pa) of ambient environment.
+    temp_a : float or xr.DataArray, default 288.15
+        Temperature (K) of ambient environment.
+    u : float or xr.DataArray, default 2.5
+        Wind speed (m/s).
+    x : float or xr.DataArray, default 6000.
+        Distance from stack at which plume-rise is calculated (m).
+    theta_lapse : float or xr.DataArray, optional
+        Potential Temperature Gradient (dtheta / dz) in K/m.
+    F : float or xr.DataArray, optional
+        Buoyancy parameter (m4/s3).
+
     Returns
     -------
-    dz : float
+    dz : float or xr.DataArray
         Plume rise height of centerline.
-
-    Notes
-    -----
-    Approximates calculations used by CMAQ and SMOKE to calculate plume rise.
-
-    References
-    ----------
-    [1] Seinfeld, J. H. and Pandis, S. N.: Atmospheric chemistry and physics:
-    from air pollution to climate change, 2nd ed., J. Wiley, Hoboken, N.J, 2006
     """
-    import numpy as np
-    g = 9.80665  # scipy.constants.g
-    # Buoyancy flux parameter in Table 18.4 footnote
+    g = 9.80665
+    # Buoyancy flux parameter
     if F is None:
-        # do not allow negative temperature in F parameter
         dT = np.maximum(0, stktk - temp_a)
         F = g * stkdm**2 / 4 * stkvel * dT / stktk
-    # As implemented on pg 868 of Seinfeld and Pandis ACP (2006)
-    # using Neutral and unstable environments.
-    if theta_lapse is None or theta_lapse <= 0.005:
-        dzbriggs_neutral_loF_loX = (1.6 * F**(1 / 3.)) * x**(2 / 3.) / u
-        dzbriggs_neutral_loF_hiX = (21.4 * F**(3 / 4.)) * x**(0) / u
-        dzbriggs_neutral_hiF_loX = dzbriggs_neutral_loF_loX
-        dzbriggs_neutral_hiF_hiX = (38.7 * F**(3 / 5.)) * x**(0) / u
-        dzbriggs_loF = np.where(
-            x < (49*F**(5/8.)),
-            dzbriggs_neutral_loF_loX,
-            dzbriggs_neutral_loF_hiX
+
+    if theta_lapse is None or (
+        isinstance(theta_lapse, (float, int)) and theta_lapse <= 0.005
+    ):
+        dz_neutral_loF_loX = (1.6 * F ** (1 / 3.0)) * x ** (2 / 3.0) / u
+        dz_neutral_loF_hiX = (21.4 * F ** (3 / 4.0)) / u
+        dz_neutral_hiF_hiX = (38.7 * F ** (3 / 5.0)) / u
+
+        dz_loF = xr.where(
+            x < (49 * F ** (5 / 8.0)), dz_neutral_loF_loX, dz_neutral_loF_hiX
         )
-        dzbriggs_hiF = np.where(
-            x < (119*F**(2/5.)),
-            dzbriggs_neutral_hiF_loX,
-            dzbriggs_neutral_hiF_hiX
+        dz_hiF = xr.where(
+            x < (119 * F ** (2 / 5.0)), dz_neutral_loF_loX, dz_neutral_hiF_hiX
         )
-        dzbriggs = np.where(F < 55, dzbriggs_loF, dzbriggs_hiF)
+        dz = xr.where(F < 55, dz_loF, dz_hiF)
     else:
-        S2 = theta_lapse * g / temp_a  # theta_lapse
-        dzbriggs_stable_1 = (2.4 * (F / S2))**(1 / 3.) / u**(1 / 3.)
-        dzbriggs_stable_2 = (5.0 * F**(1 / 4.) * S2**(-3 / 8.))
-        dzbriggs_stable_3 = 1.6 * F**(1 / 3.) * x**(2 / 3.) / u
-        # The minimum of three equations is selected (Table 18.4 footnote c)
-        dzbriggs = np.minimum(dzbriggs_stable_1, dzbriggs_stable_2)
-        dzbriggs = np.minimum(dzbriggs, dzbriggs_stable_3)
+        S2 = theta_lapse * g / temp_a
+        dz_stable_1 = (2.4 * (F / S2)) ** (1 / 3.0) / u ** (1 / 3.0)
+        dz_stable_2 = 5.0 * F ** (1 / 4.0) * S2 ** (-3 / 8.0)
+        dz_stable_3 = 1.6 * F ** (1 / 3.0) * x ** (2 / 3.0) / u
+        dz = np.minimum(dz_stable_1, dz_stable_2)
+        dz = np.minimum(dz, dz_stable_3)
 
-    return dzbriggs
+    return dz
 
 
-def open_date(
-    date, tmpl, bucket, cache=True
-):
+def parse_ioapi_time(ds: xr.Dataset) -> xr.Dataset:
     """
-    Open all files for specific date
+    Parse IOAPI TFLAG into a standard Xarray time coordinate.
 
-    Arguments
-    ---------
-    date : str
-        Date parsable by pandas.to_datetime
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset containing IOAPI 'TFLAG' variable.
+
+    Returns
+    -------
+    ds : xarray.Dataset
+        Dataset with 'time' coordinate and 'TFLAG' removed.
+    """
+    if "TFLAG" not in ds:
+        return ds
+
+    # TFLAG is (TSTEP, VAR, DATE-TIME)
+    # where DATE-TIME index 0 is YYYYJJJ and index 1 is HHMMSS
+    tflag = ds.TFLAG.data
+    dates = tflag[:, 0, 0]  # YYYYJJJ
+    times = tflag[:, 0, 1]  # HHMMSS
+
+    # Convert to datetime strings
+    dt_str = [f"{d:07d}{t:06d}" for d, t in zip(dates, times)]
+    time_coords = pd.to_datetime(dt_str, format="%Y%j%H%M%S")
+
+    # Handle conflicts if a variable is named TSTEP but is not 1D
+    if "TSTEP" in ds.variables and ds["TSTEP"].ndim > 1:
+        ds = ds.rename({"TSTEP": "IOAPI_TSTEP"})
+
+    # Rename dimension TSTEP to time if it exists
+    if "TSTEP" in ds.dims:
+        ds = ds.rename_dims({"TSTEP": "time"})
+
+    ds = ds.assign_coords(time=time_coords)
+
+    if "TFLAG" in ds:
+        del ds["TFLAG"]
+    return ds
+
+
+def open_date(date: Any, tmpl: str, bucket: str, cache: bool = True) -> xr.Dataset:
+    """
+    Open all files for specific date from AWS S3.
+
+    Parameters
+    ----------
+    date : str or datetime-like
+        Date parsable by pandas.to_datetime.
     tmpl : str
-        strftime template for date file
-        (e.g., MCIP/12US1/GRIDCRO2D.12US1.35L.%y%m%d)
+        strftime template for date file (e.g., MCIP/12US1/GRIDCRO2D.12US1.35L.%y%m%d).
     bucket : str
-        Bucket to pull from (e.g., )
-    cache : bool
+        S3 Bucket name.
+    cache : bool, default True
         Store file to prevent re-downloading.
 
     Returns
     -------
     ds : xarray.Dataset
-        File opened (either in memory or from disk)
+        Opened dataset.
+
+    Raises
+    ------
+    IOError
+        If the file does not exist in the specified S3 bucket.
     """
-    import boto3
-    import pandas as pd
-    from botocore import UNSIGNED
-    from botocore.client import Config
+    import gzip
     import io
     import os
-    import gzip
-    import cmaqsatproc as csp
-    global res
-    client = boto3.client('s3', config=Config(signature_version=UNSIGNED))
-    date = pd.to_datetime(date)
-    path = date.strftime(tmpl)
+
+    import boto3
+    from botocore import UNSIGNED
+    from botocore.client import Config
+
+    client = boto3.client("s3", config=Config(signature_version=UNSIGNED))
+    date_dt = pd.to_datetime(date)
+    path = date_dt.strftime(tmpl)
     dest = os.path.join(bucket, path)
+
+    def _open_file(source: Any) -> xr.Dataset:
+        # Use netcdf4 or scipy engine for NetCDF-3 IOAPI files
+        try:
+            # Try netcdf4 first (supports NetCDF-4 and NetCDF-3)
+            return xr.open_dataset(source, engine="netcdf4")
+        except Exception:
+            # Fallback to scipy for NetCDF-3 from stream
+            return xr.open_dataset(source, engine="scipy")
+
     if cache:
         if not os.path.exists(dest):
             res = client.list_objects(Bucket=bucket, Prefix=path)
-            nres = len(res.get('Contents', []))
-            if nres != 1:
-                raise IOError(f'{path} does not exist')
+            if len(res.get("Contents", [])) != 1:
+                # Try .gz fallback if path doesn't exist
+                if not path.endswith(".gz"):
+                    path_gz = path + ".gz"
+                    res_gz = client.list_objects(Bucket=bucket, Prefix=path_gz)
+                    if len(res_gz.get("Contents", [])) == 1:
+                        path = path_gz
+                        dest = dest + ".gz"
+                    else:
+                        raise IOError(f"{path} does not exist in {bucket}")
+                else:
+                    raise IOError(f"{path} does not exist in {bucket}")
+
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             client.download_file(bucket, path, dest)
 
-        if dest.endswith('.gz'):
-            bdy = io.BytesIO(gzip.open(dest).read())
-            f = csp.open_ioapi(bdy, engine='scipy')
+        if dest.endswith(".gz"):
+            with gzip.open(dest, "rb") as gz:
+                bdy = io.BytesIO(gz.read())
+            f = _open_file(bdy)
         else:
-            f = csp.open_ioapi(dest)
+            f = _open_file(dest)
     else:
         res = client.list_objects(Bucket=bucket, Prefix=path)
-        nres = len(res.get('Contents', []))
-        if nres != 1:
-            raise IOError(f'{path} does not exist')
+        if len(res.get("Contents", [])) != 1:
+            raise IOError(f"{path} does not exist in {bucket}")
         obj = client.get_object(Bucket=bucket, Key=path)
-        bdy = obj['Body'].read()
-        if path.endswith('.gz'):
-            bdy = gzip.decompress()
-        bdy = io.BytesIO(bdy)
-        f = csp.open_ioapi(bdy, engine='scipy')
-    return f
+        bdy_data = obj["Body"].read()
+        if path.endswith(".gz"):
+            bdy_data = gzip.decompress(bdy_data)
+        bdy = io.BytesIO(bdy_data)
+        f = _open_file(bdy)
+
+    return parse_ioapi_time(f)
 
 
 def pt2hemco(
-    path, pf, elat, elon, ez=None, nk=11, temp_a=288.15, pres_a=101325, u=2.5,
-    verbose=0
-):
+    path: str,
+    pf: xr.Dataset,
+    elat: np.ndarray,
+    elon: np.ndarray,
+    ez: Optional[np.ndarray] = None,
+    nk: int = 11,
+    temp_a: float = 288.15,
+    pres_a: float = 101325,
+    u: float = 2.5,
+    verbose: int = 0,
+) -> "hemcofile":
     """
-    Convert a point source file to a hemco-ready file
+    Convert a point source file to a hemco-ready file.
 
-    Arguments
-    ---------
+    Allocates emissions to level based on stack height (STKHT) and Briggs
+    plume rise.
+
+    Parameters
+    ----------
     path : str
-        Path to save as HEMCO file
+        Path to save as HEMCO file.
     pf : xarray.Dataset
-        Point source from se_file
-    elat : array
-        Edge latitudes for regular grid
-    elon : array
-        Edge longitudes for regular grid
-    ez : array
-        Edge altitudes in meters for vertical structure
-    nk : int
-        Number of vertical levels to use if ek not specified
-    temp_a : float
-        Temperature in K for temperature to use for plume rise.
-    pres_a : float
-        Pressure in Pa for temperature to use for plume rise.
-    verbose : int
-        Level of verbosity (0-9)
+        Point source dataset from se_file.
+    elat : np.ndarray
+        Edge latitudes for regular grid.
+    elon : np.ndarray
+        Edge longitudes for regular grid.
+    ez : np.ndarray, optional
+        Edge altitudes in meters for vertical structure.
+    nk : int, default 11
+        Number of vertical levels to use if ez not specified.
+    temp_a : float, default 288.15
+        Ambient temperature (K) for plume rise.
+    pres_a : float, default 101325
+        Ambient pressure (Pa) for plume rise.
+    u : float, default 2.5
+        Wind speed (m/s) for plume rise.
+    verbose : int, default 0
+        Verbosity level.
 
-    Arguments
-    ---------
+    Returns
+    -------
     outf : hemcofile
-        Object with .nc property
+        HEMCO file object.
     """
-    import numpy as np
-    import pandas as pd
     import warnings
-    assert pf['lat'].min() > elat.min()
-    assert pf['lat'].max() < elat.max()
-    assert pf['lon'].min() > elon.min()
-    assert pf['lon'].max() < elon.max()
 
-    # allocating emissions to level based on stack height (STKHT) and Briggs
-    # plume rise using approximate level heights from
-    # http://wiki.seas.harvard.edu/geos-chem/index.php/GEOS-Chem_vertical_grids
-    # and assuming constant T=288.15 and P=101325
+    assert pf["lat"].min() >= elat.min()
+    assert pf["lat"].max() <= elat.max()
+    assert pf["lon"].min() >= elon.min()
+    assert pf["lon"].max() <= elon.max()
+
     if ez is None:
-        ez = _defez[:nk + 1]
+        ez = _defez[: nk + 1]
     nk = ez.size - 1
-    nt = pf.sizes['time']
     nr = elat.size - 1
     nc = elon.size - 1
     clat = (elat[1:] + elat[:-1]) / 2
     clon = (elon[1:] + elon[:-1]) / 2
     ilat = np.arange(nr)
     ilon = np.arange(nc)
-    dx = pf.attrs['XCELL'] / 2
-    # replace continues lat/lon with midpoint indexer
-    ris = pd.cut(pf['lat'], bins=elat, labels=ilat).astype('i')
-    cis = pd.cut(pf['lon'], bins=elon, labels=ilon).astype('i')
-    if 'STKHT' not in pf:
-        warnings.warn('STKHT not available; 2d output')
-        nk = 1
-    else:
-        if pf['STKHT'][:].isnull().all():
-            warnings.warn('STKHT all null (likely fire); 2d output')
-            nk = 1
+    dx = pf.attrs.get("XCELL", 12000.0) / 2
 
-    if nk == 1:
-        kis = np.zeros(pf.sizes['stack'], dtype='i')
+    ris = pd.cut(pf["lat"], bins=elat, labels=ilat).astype("i")
+    cis = pd.cut(pf["lon"], bins=elon, labels=ilon).astype("i")
+
+    if "STKHT" not in pf or pf["STKHT"][:].isnull().all():
+        warnings.warn("STKHT missing or all null; 2d output")
+        nk = 1
+        kis = np.zeros(pf.sizes["stack"], dtype="i")
     else:
-        # cz = (ez[1:] + ez[:-1]) / 2
         iz = np.arange(nk)
         dz = plumerise_briggs(
-            pf['STKDM'], pf['STKVE'], pf['STKTK'],
-            temp_a=temp_a, pres_a=pres_a, u=u, x=dx
+            pf["STKDM"],
+            pf["STKVE"],
+            pf["STKTK"],
+            temp_a=temp_a,
+            pres_a=pres_a,
+            u=u,
+            x=dx,
         )
-        z = pf['STKHT'] + dz
+        z = pf["STKHT"] + dz
         z = np.minimum(np.maximum(z, ez[0]), ez[-1])
-        kis = pd.cut(z, bins=ez, labels=iz, include_lowest=True).astype('i')
+        kis = pd.cut(z, bins=ez, labels=iz, include_lowest=True).astype("i")
 
     clev = _deflevs[:nk]
     tis = (
-        (pf.time - pf.time.min()).dt.total_seconds() / 3600
-    ).round(0).astype('i').data
-    pf['ti'] = ('time',), tis
-    pf['ki'] = ('stack',), kis
-    pf['ri'] = ('stack',), ris
-    pf['ci'] = ('stack',), cis
-    nt = 25
-    tmp = np.zeros((nt, nk, nr, nc), dtype='f')
+        ((pf.time - pf.time.min()).dt.total_seconds() / 3600).round(0).astype("i").data
+    )
+    pf["ti"] = ("time",), tis
+    pf["ki"] = ("stack",), kis
+    pf["ri"] = ("stack",), ris
+    pf["ci"] = ("stack",), cis
+
+    nt = pf.sizes["time"]
     datakeys = [
-        k for k, v in pf.data_vars.items()
+        k
+        for k, v in pf.data_vars.items()
         if (
-            k not in ('TFLAG', 'lon', 'lat', 'ti', 'ki', 'ri', 'ci')
-            and len(v.dims) > 1
+            k not in ("TFLAG", "lon", "lat", "ti", "ki", "ri", "ci") and len(v.dims) > 1
         )
     ]
     outf = hemcofile(
         path, pf.time, clat, clon, lev=clev, varkeys=datakeys, attrs=pf.attrs
     )
     area = hemco_area(elat, elon)
-    outf.addvar('AREA', area, units='m2', dims=('lat', 'lon'))
+    outf.addvar("AREA", area, units="m2", dims=("lat", "lon"))
+
     for dk in datakeys:
-        if len(pf[dk].dims) == 1:
-            if verbose > 1:
-                print(f'skip {dk}')
-            continue
-        dtot = pf[dk].sum()
-        if dtot == 0:
-            if verbose > 0:
-                print(f'zero {dk} emis; excluded {dk}')
-            continue
-        tmp[:] *= 0
         if verbose > 0:
-            print(dk)
-        df = pf[['ti', 'ki', 'ri', 'ci', dk]].to_dataframe()
+            print(f"Processing {dk}")
+        df = pf[["ti", "ki", "ri", "ci", dk]].to_dataframe()
         df = df.loc[df[dk] != 0]
-        vals = df.groupby(['ti', 'ki', 'ri', 'ci'], as_index=False).sum()
+        if df.empty:
+            continue
+        vals = df.groupby(["ti", "ki", "ri", "ci"], as_index=False).sum()
+        tmp = np.zeros((nt, nk, nr, nc), dtype="f")
         tmp[vals.ti, vals.ki, vals.ri, vals.ci] = vals[dk].values
         attrs = {k: v for k, v in pf[dk].attrs.items()}
-        unit = attrs['units'].strip()
+        unit = attrs.get("units", "unknown").strip()
         tmp, unit = unitconvert(dk, tmp, unit, area=area)
-        attrs['units'] = unit
+        attrs["units"] = unit
         outf.addvar(dk, tmp, **attrs)
 
     return outf
 
 
-def gd2matrix(gf, elat, elon):
+def regrid_dataset(
+    ds: xr.Dataset,
+    target_grid: xr.Dataset,
+    method: str = "conservative",
+    reuse_weights: bool = True,
+    weights_file: str = "weights.nc",
+    **kwargs: Any,
+) -> xr.Dataset:
     """
-    Create a pixel to pixel fractional mapping matrix.
+    Regrid a Dataset using xregrid following AERO protocol.
 
-    Arguments
-    ---------
-    gf : xarray.Dataset
-        xarray dataset supported by cmaqsatproc presenting the csp.geodf
-        interface.
-    elat : array
-        Edges of grid latitudes in degrees_north
-    elon : array
-        Edges of grid longitudes in degrees_east
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Source dataset.
+    target_grid : xarray.Dataset
+        Target grid dataset containing 'lat' and 'lon' (and boundaries for
+        conservative).
+    method : str, default 'conservative'
+        Regridding method (bilinear, conservative, nearest_s2d, etc.).
+    reuse_weights : bool, default True
+        Whether to save and reuse weights from disk.
+    weights_file : str, default 'weights.nc'
+        Path to weights file.
+    **kwargs : Any
+        Additional arguments for xregrid.Regridder.
 
     Returns
     -------
-    gdf : pandas.DataFrame
+    out_ds : xarray.Dataset
+        Regridded dataset with updated scientific provenance in history.
+
+    Raises
+    ------
+    ImportError
+        If xregrid is not installed.
+    """
+    if xregrid is None:
+        raise ImportError("xregrid is required for this operation.")
+
+    import os
+
+    # Handle weight reuse
+    if reuse_weights and os.path.exists(weights_file):
+        regridder = Regridder.from_weights(
+            weights_file, ds, target_grid, method=method, **kwargs
+        )
+    else:
+        regridder = Regridder(
+            ds,
+            target_grid,
+            method=method,
+            reuse_weights=reuse_weights,
+            filename=weights_file,
+            **kwargs,
+        )
+
+    out_ds = regridder(ds)
+
+    # Update history for provenance
+    history = out_ds.attrs.get("history", "")
+    ts = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    history += f"\n{ts}: Regridded using xregrid method={method}"
+    out_ds.attrs["history"] = history
+
+    return out_ds
+
+
+def gd2hemco(
+    path: str,
+    gf: xr.Dataset,
+    elat: np.ndarray,
+    elon: np.ndarray,
+    method: str = "conservative",
+    reuse_weights: bool = True,
+    weights_file: str = "weights.nc",
+    verbose: int = 0,
+) -> "hemcofile":
+    """
+    Regrid a CMAQ gridded file to HEMCO using xregrid (AERO Protocol).
+
+    Parameters
+    ----------
+    path : str
+        Output file path.
+    gf : xarray.Dataset
+        Source gridded emissions dataset.
+    elat : np.ndarray
+        Edge latitudes for target grid.
+    elon : np.ndarray
+        Edge longitudes for target grid.
+    method : str, default 'conservative'
+        Regridding method.
+    reuse_weights : bool, default True
+        Whether to reuse weights.
+    weights_file : str, default 'weights.nc'
+        File to save/load weights.
+    verbose : int, default 0
+        Verbosity level.
+
+    Returns
+    -------
+    outf : hemcofile
+        HEMCO file object.
+    """
+    if "lat" not in gf or "lon" not in gf:
+        gf = gd_file(gf)
+
+    # Create target grid
+    clat = (elat[1:] + elat[:-1]) / 2
+    clon = (elon[1:] + elon[:-1]) / 2
+    target_grid = xr.Dataset(
+        {
+            "lat": (["lat"], clat, _latattrs),
+            "lon": (["lon"], clon, _lonattrs),
+        }
+    )
+    if method == "conservative":
+        target_grid["lat_b"] = (
+            ["lat_v", "lon_v"],
+            (elat[:, None] * np.ones((1, elon.size))).astype("f"),
+        )
+        target_grid["lon_b"] = (
+            ["lat_v", "lon_v"],
+            (np.ones((elat.size, 1)) * elon[None, :]).astype("f"),
+        )
+        target_grid.lat.attrs["units"] = "degrees_north"
+        target_grid.lon.attrs["units"] = "degrees_east"
+
+        # Ensure source has bounds
+        if "lat_b" not in gf:
+            gf = _add_bounds_to_cmaq(gf)
+
+    rgf = regrid_dataset(
+        gf,
+        target_grid,
+        method=method,
+        reuse_weights=reuse_weights,
+        weights_file=weights_file,
+    )
+
+    clev = _deflevs[:1]
+    datakeys = [
+        k for k in rgf.data_vars if k not in ("TFLAG", "lon", "lat", "lat_b", "lon_b")
+    ]
+    outf = hemcofile(
+        path, rgf.time, clat, clon, lev=clev, varkeys=datakeys, attrs=rgf.attrs
+    )
+    area = hemco_area(elat, elon)
+    outf.addvar("AREA", area, units="m2", dims=("lat", "lon"))
+
+    for dk in datakeys:
+        if verbose > 0:
+            print(f"Adding {dk}")
+        attrs = {k: v for k, v in rgf[dk].attrs.items()}
+        unit = attrs.get("units", "unknown").strip()
+        # Unit conversion might be needed if source was not flux
+        tmp, unit = unitconvert(dk, rgf[dk].expand_dims("lev", axis=1), unit, area=area)
+        attrs["units"] = unit
+        outf.addvar(dk, tmp, **attrs)
+
+    return outf
+
+
+def _add_bounds_to_cmaq(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Add approximate bounds to a CMAQ dataset for xregrid.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Input CMAQ dataset in projected coordinates.
+
+    Returns
+    -------
+    ds : xarray.Dataset
+        Dataset with 'lat_b' and 'lon_b' corner coordinates added.
+    """
+    import pyproj
+
+    proj = pyproj.Proj(ds.crs)
+    # Use coordinates directly if possible, else assume from attributes
+    x = ds.COL
+    y = ds.ROW
+    dx = ds.attrs.get("XCELL", 12000.0)
+    dy = ds.attrs.get("YCELL", 12000.0)
+
+    # Edge coordinates in projected space
+    xe = np.linspace(x.data[0] - dx / 2, x.data[-1] + dx / 2, len(x) + 1)
+    ye = np.linspace(y.data[0] - dy / 2, y.data[-1] + dy / 2, len(y) + 1)
+
+    XE, YE = np.meshgrid(xe, ye)
+    LONE, LATE = proj(XE, YE, inverse=True)
+
+    ds["lat_b"] = (("lat_v", "lon_v"), LATE.astype("f"))
+    ds["lon_b"] = (("lat_v", "lon_v"), LONE.astype("f"))
+    ds.lat.attrs["units"] = "degrees_north"
+    ds.lon.attrs["units"] = "degrees_east"
+    return ds
+
+
+def gd2hemco_fast(
+    path: str,
+    gf: xr.Dataset,
+    elat: np.ndarray,
+    elon: np.ndarray,
+    verbose: int = 0,
+) -> "hemcofile":
+    """
+    Fast regridding using xregrid conservative method (AERO Protocol).
+
+    Replaces old bilinear implementation for improved mass conservation.
+
+    Parameters
+    ----------
+    path : str
+        Output file path.
+    gf : xarray.Dataset
+        Source gridded emissions dataset.
+    elat : np.ndarray
+        Edge latitudes for target grid.
+    elon : np.ndarray
+        Edge longitudes for target grid.
+    verbose : int, default 0
+        Verbosity level.
+
+    Returns
+    -------
+    outf : hemcofile
+        HEMCO file object.
+    """
+    return gd2hemco(path, gf, elat, elon, method="conservative", verbose=verbose)
+
+
+def gd2matrix(gf: xr.Dataset, elat: np.ndarray, elon: np.ndarray) -> pd.DataFrame:
+    """
+    Create a pixel to pixel fractional mapping matrix (Legacy).
+
+    Used for fractional area overlap interpolation before xregrid integration.
+
+    Parameters
+    ----------
+    gf : xarray.Dataset
+        Input gridded dataset presenting the spatial metadata.
+    elat : np.ndarray
+        Edges of grid latitudes in degrees_north.
+    elon : np.ndarray
+        Edges of grid longitudes in degrees_east.
+
+    Returns
+    -------
+    gdf : pd.DataFrame
         Mapping from ROW/COL to lon/lat cells with fraction of mass per
         ROW/COL assigned to lon/lat.
     """
-    from shapely.geometry import box
-    import geopandas as gpd
     import warnings
+
+    import geopandas as gpd
+    from shapely.geometry import box
+
     clat = (elat[:-1] + elat[1:]) / 2
     clon = (elon[:-1] + elon[1:]) / 2
     hdx = np.diff(elon).mean() / 2
     hdy = np.diff(elat).mean() / 2
-    qgeodf = gf.csp.geodf
-    qgeodf['original_area'] = qgeodf.geometry.area
+
+    # Fallback to manual GeoDataFrame creation
+    # This assumes standard CMAQ metadata or already present lat/lon
+    if "lat" not in gf or "lon" not in gf:
+        gf = gd_file(gf)
+
+    rows, cols = xr.broadcast(gf.ROW, gf.COL)
+    qgeodf = gpd.GeoDataFrame(
+        {"ROW": rows.data.ravel(), "COL": cols.data.ravel()},
+        geometry=gpd.points_from_xy(gf.lon.data.ravel(), gf.lat.data.ravel()),
+        crs=4326,
+    )
+    # Approximate cell polygons
+    dx = gf.attrs.get("XCELL", 12000.0)
+    # Note: This legacy function remains somewhat eager for back-compat
+    qgeodf["geometry"] = qgeodf.geometry.buffer(dx / 200000, cap_style="square")
+    qgeodf["original_area"] = qgeodf.geometry.area
+
     if hdx == hdy:
         latj = np.arange(clat.size)
         loni = np.arange(clon.size)
         LONI, LATJ = np.meshgrid(loni, latj)
         LON, LAT = np.meshgrid(clon, clat)
-        LAT = LAT.ravel()
-        LON = LON.ravel()
-        LATJ = LATJ.ravel()
-        LONI = LONI.ravel()
         hgeodf = gpd.GeoDataFrame(
-            dict(lat=LAT, lon=LON, lati=LATJ, loni=LONI),
-            geometry=gpd.points_from_xy(LON, LAT), crs=4326
+            dict(
+                lat=LAT.ravel(), lon=LON.ravel(), lati=LATJ.ravel(), loni=LONI.ravel()
+            ),
+            geometry=gpd.points_from_xy(LON.ravel(), LAT.ravel()),
+            crs=4326,
         )
         with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            hgeodf['geometry'] = hgeodf['geometry'].buffer(
-                hdx, cap_style='square'
-            )
+            warnings.simplefilter("ignore")
+            hgeodf["geometry"] = hgeodf["geometry"].buffer(hdx, cap_style="square")
     else:
         geoms = []
-        lats = []
-        latis = []
-        lons = []
-        lonis = []
+        lats, latis, lons, lonis = [], [], [], []
         for lati, lat in enumerate(clat):
             for loni, lon in enumerate(clon):
                 lats.append(lat)
                 latis.append(lati)
-                lons.append(lons)
+                lons.append(lon)
                 lonis.append(loni)
                 geoms.append(box(lon - hdx, lat - hdy, lon + hdx, lat + hdy))
         hgeodf = gpd.GeoDataFrame(
-            dict(lat=lats, lons=lons, lati=latis, loni=lonis),
-            geometry=geoms, crs=4326
+            dict(lat=lats, lon=lons, lati=latis, loni=lonis), geometry=geoms, crs=4326
         )
-    ol = gpd.overlay(qgeodf.reset_index(), hgeodf.to_crs(qgeodf.crs))
-    ol['intx_area'] = ol.geometry.area
-    ol['fraction'] = ol['intx_area'] / ol['original_area']
-    ol['ri'] = ol['ROW'].astype('i')
-    ol['ci'] = ol['COL'].astype('i')
-    return ol.set_index(['ROW', 'COL', 'lati', 'loni'])
+
+    ol = gpd.overlay(qgeodf, hgeodf)
+    ol["intx_area"] = ol.geometry.area
+    ol["fraction"] = ol["intx_area"] / ol["original_area"]
+    ol["ri"] = ol["ROW"].astype("i")
+    ol["ci"] = ol["COL"].astype("i")
+    return ol.set_index(["ROW", "COL", "lati", "loni"])
 
 
-def gd2hemco_fast(path, gf, elat, elon, verbose=0):
+def unitconvert(
+    key: str,
+    val: Union[np.ndarray, xr.DataArray],
+    unit: str,
+    area: Optional[Union[np.ndarray, xr.DataArray]] = None,
+    inplace: bool = True,
+) -> Tuple[Union[np.ndarray, xr.DataArray], str]:
     """
-    Bilinear interpolation of fluxes (w/ MSFX2 factor)
+    Perform unit conversion to kg/m2/s.
 
-    Arguments
-    ---------
-    path : str
-        Path to save as HEMCO file
-    pf : xarray.Dataset
-        Point source from se_file
-    elat : array
-        Edge latitudes for regular grid
-    elon : array
-        Edge longitudes for regular grid
-    verbose : int
-        Level of verbosity
-
-    Arguments
-    ---------
-    outf : hemcofile
-        Object with .nc property
-    """
-    import pyproj
-    proj = pyproj.Proj(gf.crs)
-    qarea = (
-        gf.XCELL * gf.YCELL
-        / proj.get_factors(gf['lon'], gf['lat']).areal_scale
-    )
-    clat = (elat[1:] + elat[:-1]) / 2
-    clon = (elon[1:] + elon[:-1]) / 2
-    clev = _deflevs[:1]
-    datakeys = [
-        k for k in gf
-        if k not in ('TFLAG', 'ti', 'ki', 'ri', 'ci', 'lon', 'lat')
-    ]
-    outf = hemcofile(
-        path, gf.time, clat, clon, lev=clev, varkeys=datakeys, attrs=gf.attrs
-    )
-    area = hemco_area(elat, elon)
-    outf.addvar('AREA', area, units='m2', dims=('lat', 'lon'))
-    LON, LAT = np.meshgrid(clon, clat)
-    X, Y = proj(LON, LAT)
-    X = xr.DataArray(X, dims=('ROW', 'COL'))
-    Y = xr.DataArray(Y, dims=('ROW', 'COL'))
-    for dk in datakeys:
-        dtot = gf[dk].sum()
-        if dtot == 0:
-            if verbose > 0:
-                print(f'excluded {dk}')
-            continue
-        if verbose > 0:
-            print(dk)
-        tmp = (gf[dk] / qarea).interp(ROW=Y, COL=X)
-        attrs = {k: v for k, v in gf[dk].attrs.items()}
-        unit = attrs['units'].strip() + '/m**2'
-        tmp, unit = unitconvert(dk, tmp, unit=unit)
-        attrs['units'] = unit
-        outf.addvar(dk, tmp.data, **attrs)
-
-    return outf
-
-
-def gd2hemco(path, gf, elat, elon, matrix=None, verbose=0):
-    """
-    Uses a fractional aera overlap interoplation.
-
-    Arguments
-    ---------
-    path : str
-        Path to save as HEMCO file
-    pf : xarray.Dataset
-        Point source from se_file
-    elat : array
-        Edge latitudes for regular grid
-    elon : array
-        Edge longitudes for regular grid
-    matrix : pandas.DataFrame
-        fraction from row/col centroids to lat/lon centroids
-    verbose : int
-        Level of verbosity
-
-    Arguments
-    ---------
-    outf : hemcofile
-        Object with .nc property
-    """
-    import numpy as np
-    import pandas as pd
-    if not gf['lat'].min() > elat.min():
-        raise AssertionError('input grid lat lower than output grid')
-    if not gf['lat'].max() < elat.max():
-        raise AssertionError('input grid lat greater than output grid')
-    if not gf['lon'].min() > elon.min():
-        raise AssertionError('input grid lon lower than output grid')
-    if not gf['lon'].max() < elon.max():
-        print(gf['lon'].max())
-        raise AssertionError('input grid lon greater than output grid')
-    if matrix is None:
-        matrix = gd2matrix(gf, elat, elon)
-
-    nt = gf.sizes['time']
-    nr = elat.size - 1
-    nc = elon.size - 1
-    nk = 1
-    clat = (elat[1:] + elat[:-1]) / 2
-    clon = (elon[1:] + elon[:-1]) / 2
-    clev = _deflevs[:nk]
-    tis = (
-        (gf.time - gf.time.min()).dt.total_seconds() / 3600
-    ).round(0).astype('i').data
-    gf['ti'] = ('time',), tis
-    kis = np.zeros((nk,), dtype='i')
-    gf['ki'] = ('LAY',), kis
-    nt = 25
-    tmp = np.zeros((nt, nk, nr, nc), dtype='f')
-    datakeys = [
-        k for k in gf
-        if k not in ('TFLAG', 'ti', 'ki', 'ri', 'ci', 'lon', 'lat')
-    ]
-    outf = hemcofile(
-        path, gf.time, clat, clon, lev=clev, varkeys=datakeys, attrs=gf.attrs
-    )
-    area = hemco_area(elat, elon)
-    outf.addvar('AREA', area, units='m2', dims=('lat', 'lon'))
-    if matrix is not None:
-        matrix = matrix[['fraction']].reset_index()
-    else:
-        matrix = gf[['ROW', 'COL']].to_dataframe().reset_index()
-        ilat = np.arange(nr + 1)
-        ilon = np.arange(nc + 1)
-        # replace continues lat/lon with midpoint indexer
-        ris = np.interp(
-            gf['lat'], elat, ilat, left=-999, right=-888
-        ).astype('i')
-        cis = np.interp(
-            gf['lon'], elon, ilon, left=-999, right=-888
-        ).astype('i')
-        matrix['lati'] = ris.data.ravel()
-        matrix['loni'] = cis.data.ravel()
-        matrix['fraction'] = 1
-
-    merged = None
-    for dk in datakeys:
-        if len(gf[dk].dims) == 1:
-            if verbose > 1:
-                print(f'skip {dk}')
-            continue
-        tmp[:] *= 0
-        if verbose > 0:
-            print(dk)
-        df = gf[['ti', 'ki', dk]].to_dataframe()
-        gvals = df.groupby(['ti', 'ki', 'ROW', 'COL'], as_index=True).sum()
-        if merged is None:
-            merged = pd.merge(
-                gvals.reset_index(), matrix,
-                left_on=['ROW', 'COL'], right_on=['ROW', 'COL'], how='left'
-            ).rename(columns={dk: 'val'}).set_index(
-                ['ti', 'ki', 'ROW', 'COL', 'lati', 'loni']
-            )
-            midx = merged.index.droplevel(['lati', 'loni'])
-            frac = merged['fraction'].values
-        merged['val'] = frac * gvals.loc[midx, dk].values
-        idxs = ['ti', 'ki', 'lati', 'loni']
-        gval = merged['val'].groupby(idxs).sum()
-        ti = gval.index.get_level_values('ti')
-        ki = gval.index.get_level_values('ki')
-        lati = gval.index.get_level_values('lati')
-        loni = gval.index.get_level_values('loni')
-        tmp[ti, ki, lati, loni] += gval
-        attrs = {k: v for k, v in gf[dk].attrs.items()}
-        tmp, unit = unitconvert(dk, tmp, attrs['units'], area=area)
-        attrs['units'] = unit
-        outf.addvar(dk, tmp, **attrs)
-
-    return outf
-
-
-def unitconvert(key, val, unit, area=None, inplace=True):
-    """
-    Arguments
-    ---------
+    Parameters
+    ----------
     key : str
-        Name of species to get molecular weight.
-    val : array-like
-        Values in units (unit) to be converted if unit is known..
+        Species name to get molecular weight.
+    val : np.ndarray or xr.DataArray
+        Values in input units to be converted.
     unit : str
-        Input unit where beginning and ending spaces will be removed. Input
-        units that are known are:
-        g/s, g/s/m**2, g/m**2/s, or
-        moles/s, moles/s/m**2, moles/m**2/s
-        convertible to kg/m**2/s
-    area : array-like
-        Area for each pixel of the val array
-    inplace : bool
-        If True, do the unit conversion within the val array without allocating
-        additional memory
+        Input unit string (e.g., 'moles/s', 'g/s/m2').
+    area : np.ndarray or xr.DataArray, optional
+        Area for each pixel (m2) if input is not per unit area.
+    inplace : bool, default True
+        If True, do the conversion in-place.
 
     Returns
     -------
-    outval, outunit : tuple
-        outval has been converted (if possible) to kg/m2/s
-        outunit is the final unit (kg/m2/s if possible)
+    outval : np.ndarray or xr.DataArray
+        Converted values in kg/m2/s.
+    outunit : str
+        Final unit string ('kg/m2/s').
+
+    Raises
+    ------
+    AssertionError
+        If '/s' is not in the input unit.
     """
     unit = unit.strip()
-    outunit = []
-    factor = np.ones_like(val)
-    assert '/s' in unit
-    inunit = unit.replace('/s', '')
-    gps = ('g/s', 'g/s/m**2', 'g/m**2/s', 'g/m2/s', 'g/s/m2')
-    nps = (
-        'moles/s', 'moles/s/m**2', 'moles/m**2/s', 'moles/s/m2', 'moles/m2/s'
-    )
+    outunit_parts = []
+    factor = 1.0
+    assert "/s" in unit
+    inunit = unit.replace("/s", "")
+    gps = ("g/s", "g/s/m**2", "g/m**2/s", "g/m2/s", "g/s/m2")
+    nps = ("moles/s", "moles/s/m**2", "moles/m**2/s", "moles/s/m2", "moles/m2/s")
+
     if unit in gps:
-        factor /= 1000.
-        outunit.append('kg')
+        factor /= 1000.0
+        outunit_parts.append("kg")
     elif unit in nps:
         try:
             mw = getmw(key)
             factor *= mw
-            outunit.append('kg')
+            outunit_parts.append("kg")
         except KeyError as e:
-            print(f'**WARNING: {key} in {unit} not converted to kg: {e}')
-            outunit.append(inunit)
+            print(f"**WARNING: {key} in {unit} not converted to kg: {e}")
+            outunit_parts.append(inunit)
     else:
-        print(f'**WARNING: {key} [{unit}] not converted to kg: {unit} unknown')
-        outunit.append(inunit)
-    if 'm**2' not in unit and area is not None:
+        print(f"**WARNING: {key} [{unit}] not converted to kg: {unit} unknown")
+        outunit_parts.append(inunit)
+
+    if "m**2" not in unit and area is not None:
         factor /= area
-        outunit.append('/m**2')
-    elif '/m**2' in unit:
-        outunit.append('/m**2')
-    outunit.append('/s')
-    outunit = ''.join(outunit)
+        outunit_parts.append("/m**2")
+    elif "/m**2" in unit:
+        outunit_parts.append("/m**2")
+    outunit_parts.append("/s")
+    outunit = "".join(outunit_parts).replace("/s/m", "/m2/s")
+
     if inplace:
+        val *= factor
         outval = val
-        outval *= factor
     else:
         outval = val * factor
-    outunit = outunit.replace('/s/m', '/m2/s')
+
     return outval, outunit
 
 
-def merge(fs, bf=None):
+def merge(fs: List[xr.Dataset], bf: Optional[xr.Dataset] = None) -> xr.Dataset:
     """
-    Combine many files into a single file with the mass from all and the
-    vertical structure of the tallest file.
+    Combine many datasets into a single dataset.
 
-    Arguments
-    ---------
-    fs : list
-        List of file objects to merge
-    bf : xarray.Dataset
-        Use this file as the basis for the coordiantes.
+    Uses the mass from all datasets and the vertical structure of the
+    tallest one.
+
+    Parameters
+    ----------
+    fs : list of xarray.Dataset
+        List of dataset objects to merge.
+    bf : xarray.Dataset, optional
+        Basis dataset for coordinates. If None, uses the tallest.
 
     Returns
     -------
-    mf : xarray.Dataset
+    bf : xarray.Dataset
+        Merged dataset with updated history.
     """
     import copy
+
     if bf is None:
-        bf = sorted([
-            (f.sizes.get('lev', 1), f)
-            for f in fs
-        ])[-1][1][['time', 'lev', 'lat', 'lon']]
+        bf = sorted([(f.sizes.get("lev", 1), f) for f in fs])[-1][1][
+            ["time", "lev", "lat", "lon"]
+        ]
     fattrs = copy.deepcopy(bf.attrs)
     vattrs = {k: copy.deepcopy(v.attrs) for k, v in bf.data_vars.items()}
     for f in fs:
-        for k in f:
+        for k in f.data_vars:
             if k not in bf:
                 bf[k] = f[k]
                 vattrs[k] = copy.deepcopy(f[k].attrs)
@@ -767,451 +1060,477 @@ def merge(fs, bf=None):
                 bf[k] = bf[k] + f[k].data
             bf[k].attrs.update(vattrs[k])
     bf.attrs.update(fattrs)
+    # Update history
+    ts = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    bf.attrs["history"] = bf.attrs.get("history", "") + f"\n{ts}: Merged datasets."
     return bf
 
 
 def pt2gd(
-    pf, nr, nc, ez=None, vgtyp=-9999, vgtop=5000., vglvls=None, byvar=True
-):
+    pf: xr.Dataset,
+    nr: int,
+    nc: int,
+    ez: Optional[np.ndarray] = None,
+    vgtyp: int = -9999,
+    vgtop: float = 5000.0,
+    vglvls: Optional[np.ndarray] = None,
+    byvar: bool = True,
+) -> xr.Dataset:
     """
-    Convert point file (from se_file) to a CMAQ gridded emission file.
+    Convert point file to a CMAQ gridded emission file.
 
-    Arguments
-    ---------
+    Assigns vertical layers using Briggs plume rise calculations.
+
+    Parameters
+    ----------
     pf : xarray.Dataset
-        Must have time and stack dimensiosn with stack parameters from stack
-        group and emissions.
+        Point source dataset with 'time' and 'stack' dimensions.
     nr : int
-        Number of rows (assuming YORIG and YCELL are accurate)
+        Number of rows for the output grid.
     nc : int
-        Number of cols (assuming XORIG and XCELL are accurate)
-    ez : array-like
-        Edges of the vertical array being created allocated to
-    vgtyp : int
-        Vertical grid type using the IOAPI parameters
-    vgtop : float
-        Top of the vertical grid in Pascals
-    vglvls : array-like
-        Edges of the vertical grid in the terrain following pressure system.
-        vglvls_z = (p_z - vgtop) / (p - psfc)
-    byvar : bool
-        Perform calculations by variable to reduce overall memmory load.
+        Number of columns for the output grid.
+    ez : np.ndarray, optional
+        Edges of the vertical array being created (m).
+    vgtyp : int, default -9999
+        Vertical grid type using IOAPI parameters.
+    vgtop : float, default 5000.0
+        Top of the vertical grid in Pascals.
+    vglvls : np.ndarray, optional
+        Edges of the vertical grid in terrain-following system.
+    byvar : bool, default True
+        Perform calculations by variable to reduce memory load.
 
     Returns
     -------
-    gf : xarray.Dataset
-        Gridded file representing the mass from the point source file, but on
-        a regular projected grid with vertical layers assigned using Briggs
-        plumerise calculations.
+    outf : xarray.Dataset
+        Gridded dataset representing point source mass.
     """
-    import numpy as np
-    import xarray as xr
-    import pandas as pd
-
-    ns = pf.sizes['stack']
-    nt = pf.sizes['time']
+    ns = pf.sizes["stack"]
+    nt = pf.sizes["time"]
     if ez is None:
         nz = 1
-        kis = np.zeros((ns,), dtype='i')
+        kis = np.zeros((ns,), dtype="i")
     else:
         nz = ez.size - 1
-        dz = plumerise_briggs(pf['STKDM'], pf['STKVE'], pf['STKTK'])
-        dz[np.isnan(dz)] = 0
-        zs = pf['STKHT'] + dz
+        dz = plumerise_briggs(pf["STKDM"], pf["STKVE"], pf["STKTK"])
+        dz = xr.where(np.isnan(dz), 0, dz)
+        zs = pf["STKHT"] + dz
         zs = np.minimum(ez.max(), np.maximum(ez.min(), zs))
-        cz = np.arange(nz, dtype='i')
-        kis = pd.cut(zs, bins=ez, labels=cz)
-        kis = kis.astype('i')
+        kis = pd.cut(zs, bins=ez, labels=np.arange(nz, dtype="i")).astype("i")
 
-    ex = np.arange(nc) * pf.XCELL + pf.XORIG
-    ey = np.arange(nr) * pf.YCELL + pf.YORIG
-    cx = np.arange(ex.size - 1, dtype='i')
-    cy = np.arange(ey.size - 1, dtype='i')
-    ris = pd.cut(pf['YLOCA'], bins=ey, labels=cy)
-    cis = pd.cut(pf['XLOCA'], bins=ex, labels=cx)
-    outside = (ris != ris) | (cis != cis)
+    ex = np.arange(nc + 1) * pf.XCELL + pf.XORIG
+    ey = np.arange(nr + 1) * pf.YCELL + pf.YORIG
+    ris = pd.cut(pf["YLOCA"], bins=ey, labels=np.arange(nr, dtype="i"))
+    cis = pd.cut(pf["XLOCA"], bins=ex, labels=np.arange(nc, dtype="i"))
+
     outf = xr.Dataset()
     outf.attrs.update(pf.attrs)
-    outf.attrs['NCOLS'] = nc
-    outf.attrs['NROWS'] = nr
-    outf.attrs['NLAYS'] = nz
+    outf.attrs["NCOLS"] = nc
+    outf.attrs["NROWS"] = nr
+    outf.attrs["NLAYS"] = nz
     if vglvls is None:
-        vglvls = np.arange(ez.size)
-    outf.attrs['VGLVLS'] = vglvls
-    outf.attrs['VGTYP'] = vgtyp
-    outf.attrs['VGTOP'] = float(vgtop)
-    datakeys = [k for k in pf if k not in ('TFLAG',)]
-    tmp = np.zeros((nt, nz, nr, nc), dtype='f')
-    imod = max(1, ns // 1000)
+        vglvls = np.arange(nz + 1)
+    outf.attrs["VGLVLS"] = vglvls
+    outf.attrs["VGTYP"] = vgtyp
+    outf.attrs["VGTOP"] = float(vgtop)
 
-    if byvar:
-        pf['ti'] = ('time',), pf.time.dt.hour.data
-        pf['ki'] = ('stack',), kis
-        pf['ri'] = ('stack',), ris
-        pf['ci'] = ('stack',), cis
+    datakeys = [k for k in pf.data_vars if k not in ("TFLAG",)]
+
+    pf["ti"] = ("time",), pf.time.dt.hour.data
+    pf["ki"] = ("stack",), kis
+    pf["ri"] = ("stack",), ris
+    pf["ci"] = ("stack",), cis
+
     for dk in datakeys:
         if len(pf[dk].dims) == 1:
-            print(f'\nskip {dk}')
             continue
-        tmp[:] *= 0
-        if byvar:
-            print(dk)
-            df = pf[['ti', 'ki', 'ri', 'ci', dk]].to_dataframe()
-            df = df.loc[df[dk] != 0]
-            vals = df.groupby(['ti', 'ki', 'ri', 'ci'], as_index=False).sum()
+        tmp = np.zeros((nt, nz, nr, nc), dtype="f")
+        df = pf[["ti", "ki", "ri", "ci", dk]].to_dataframe()
+        df = df.loc[df[dk] != 0].dropna()
+        if not df.empty:
+            vals = df.groupby(["ti", "ki", "ri", "ci"], as_index=False).sum()
             tmp[vals.ti, vals.ki, vals.ri, vals.ci] = vals[dk].values
-        else:
-            vals = pf[dk].load()
-            for si in np.arange(ns):
-                if outside[si]:
-                    print(f'\nskip {si}')
-                    continue
-                if (si % imod) == 0:
-                    print(f'\r{dk:16s}: {si / ns:7.1%}', end='', flush=True)
-                ki = int(kis[si])
-                ri = int(ris[si])
-                ci = int(cis[si])
-                tmp[:, ki, ri, ci] += vals[:, si]
-            print(f'\r{dk:16s}: {1:7.1%}', flush=True)
 
-        outf[dk] = ('TSTEP', 'LAY', 'ROW', 'COL'), tmp, pf[dk].attrs
-        outf[dk].encoding.update(pf[dk].encoding)
-        outf[dk].encoding['chunks'] = (1, 1, nr, nc)
+        outf[dk] = (("TSTEP", "LAY", "ROW", "COL"), tmp, pf[dk].attrs)
 
     return outf
 
 
-def se_file(sf, ef):
+def se_file(sf: xr.Dataset, ef: xr.Dataset) -> xr.Dataset:
     """
-    Arguments
-    ---------
+    Combine stack group file and emission line file.
+
+    Parameters
+    ----------
     sf : xarray.Dataset
-        Expected to be read from a CMAQ stack file (TSTEP, LAY, ROW, COL)
+        CMAQ stack group dataset (dimensions include ROW).
     ef : xarray.Dataset
-        Expected to be read from a CMAQ emln file (TSTEP, LAY, ROW, COL)
+        CMAQ emission line dataset (dimensions include ROW, TSTEP).
 
     Returns
     -------
-    cf : xarray.Dataset
-        Combined file with emissions variables with dimensions ('time',
-        'stack') and stack properties with dimensions ('stack',)
+    ef : xarray.Dataset
+        Combined dataset with dimensions ('time', 'stack').
     """
-    ef = ef.rename(ROW='stack', TSTEP='time')
-    sf = sf.isel(TSTEP=0, LAY=0, COL=0, drop=True).rename(ROW='stack')
-    del sf['TFLAG']
-    del ef['TFLAG']
+    # Robust renaming
+    rename_ef = {}
+    if "ROW" in ef.dims:
+        rename_ef["ROW"] = "stack"
+    if "TSTEP" in ef.dims:
+        rename_ef["TSTEP"] = "time"
+    if rename_ef:
+        ef = ef.rename(rename_ef)
+
+    # Ensure time coordinate is parsed if not already
+    ef = parse_ioapi_time(ef)
+
+    # sf is usually a single time/layer/col slice representing stack info
+    # We want to keep it simple and rename ROW to stack
+    isel_sf = {}
+    if "TSTEP" in sf.dims:
+        isel_sf["TSTEP"] = 0
+    if "LAY" in sf.dims:
+        isel_sf["LAY"] = 0
+    if "COL" in sf.dims:
+        isel_sf["COL"] = 0
+    if isel_sf:
+        sf = sf.isel(isel_sf, drop=True)
+
+    if "ROW" in sf.dims:
+        sf = sf.rename(ROW="stack")
+
+    if "TFLAG" in sf:
+        del sf["TFLAG"]
+    if "TFLAG" in ef:
+        del ef["TFLAG"]
+
     for k in sf.data_vars:
         if k not in ef:
             ef[k] = sf[k]
-    ef['lat'] = sf['LATITUDE']
-    ef['lon'] = sf['LONGITUDE']
-    del ef['LATITUDE']
-    del ef['LONGITUDE']
+
+    # Map latitude/longitude if present
+    if "LATITUDE" in sf:
+        ef["lat"] = sf["LATITUDE"]
+    if "LONGITUDE" in sf:
+        ef["lon"] = sf["LONGITUDE"]
+
+    if "LATITUDE" in ef:
+        del ef["LATITUDE"]
+    if "LONGITUDE" in ef:
+        del ef["LONGITUDE"]
+
     return ef
 
 
-def hemco_area(elat, elon, R=6371007.2):
+def hemco_area(elat: np.ndarray, elon: np.ndarray, R: float = 6371007.2) -> np.ndarray:
     """
-    Arguments
-    ---------
-    elat : array
-        Edges that define a regular grid in degrees from 0N
-    elon : array
-        Edges that define a regular grid in degrees from 0E
-    R : float
-        Radius of the earth https://github.com/geoschem/geos-chem/issues/2453
+    Calculate area of grid cells on a sphere.
+
+    Parameters
+    ----------
+    elat : np.ndarray
+        Edges that define a regular grid in degrees north.
+    elon : np.ndarray
+        Edges that define a regular grid in degrees east.
+    R : float, default 6371007.2
+        Radius of the Earth (meters).
 
     Returns
     -------
-    A : array
-        Area in square meters with dimensions (nlat, nlon)
+    A : np.ndarray
+        Area in square meters with dimensions (nlat, nlon).
     """
-    import numpy as np
     dx = np.diff(elon).mean()
-    # 1-d area
     a = dx * np.pi / 180 * R**2 * np.diff(np.sin(np.radians(elat)))
-    # 2-d area
-    A = a.astype('f')[:, None].repeat(elon.size - 1, 1)
+    A = a.astype("f")[:, None].repeat(elon.size - 1, 1)
     return A
 
 
 class hemcofile:
+    """HEMCO NetCDF file writer (Eager)."""
+
     def __init__(
-        self, path, time, lat, lon, lev=None, varkeys=None, attrs=None
+        self,
+        path: str,
+        time: Any,
+        lat: np.ndarray,
+        lon: np.ndarray,
+        lev: Optional[np.ndarray] = None,
+        varkeys: Optional[List[str]] = None,
+        attrs: Optional[dict] = None,
     ):
         """
-        Arguments
-        ---------
+        Initialize HEMCO NetCDF file.
+
+        Parameters
+        ----------
         path : str
-            path of the input file to be created.
-        time : array
-            Times of the output file in UTC
-        lat : array
-            Latitudes for midpoints of grid in the destination file in
-            degrees_north
-        lon : array
-            Longitudes for midpoints of grid in the destination file in
-            degrees_east
-        lev : array
-            Vertical layers for the destination file
-        varkeys : list
-            List of keys to write from the file
-        attrs : mappable
+            Path of the NetCDF file to be created.
+        time : Any
+            Times of the output file in UTC.
+        lat : np.ndarray
+            Latitudes for midpoints of grid (degrees_north).
+        lon : np.ndarray
+            Longitudes for midpoints of grid (degrees_east).
+        lev : np.ndarray, optional
+            Vertical layers for the destination file.
+        varkeys : list of str, optional
+            List of variables to pre-define.
+        attrs : dict, optional
             Attributes for the output file.
         """
-        import pandas as pd
         import netCDF4
-        if varkeys is None:
-            varkeys = []
-        nc = self.nc = netCDF4.Dataset(
-            path, mode='ws', format='NETCDF4_CLASSIC'
-        )
-        if attrs is not None:
+
+        self.nc = netCDF4.Dataset(path, mode="ws", format="NETCDF4_CLASSIC")
+        if attrs:
             for pk, pv in attrs.items():
-                nc.setncattr(pk, pv)
-        nc.createDimension('time', None)
+                self.nc.setncattr(pk, pv)
+        self.nc.createDimension("time", None)
         if lev is not None:
-            nc.createDimension('lev', lev.size)
-        nc.createDimension('lat', lat.size)
-        nc.createDimension('lon', lon.size)
-        tv = nc.createVariable('time', 'd', ('time',))
+            self.nc.createDimension("lev", lev.size)
+        self.nc.createDimension("lat", lat.size)
+        self.nc.createDimension("lon", lon.size)
+
+        tv = self.nc.createVariable("time", "d", ("time",))
         for k, v in _timeattrs.items():
             tv.setncattr(k, v)
         timec = (
-            (
-                pd.to_datetime(time)
-                - pd.to_datetime(_reftime)
-            ).total_seconds() / 3600.
-        ).astype('d')
-        tv[:timec.size] = timec
+            (pd.to_datetime(time) - pd.to_datetime(_reftime)).total_seconds() / 3600.0
+        ).astype("d")
+        tv[: timec.size] = timec
+
         if lev is not None:
-            levv = nc.createVariable('lev', 'd', ('lev',))
+            levv = self.nc.createVariable("lev", "d", ("lev",))
             for k, v in _levattrs.items():
                 levv.setncattr(k, v)
             levv[:] = lev
-        latv = nc.createVariable('lat', 'd', ('lat',))
+
+        latv = self.nc.createVariable("lat", "d", ("lat",))
         for k, v in _latattrs.items():
             latv.setncattr(k, v)
         latv[:] = lat
-        lonv = nc.createVariable('lon', 'd', ('lon',))
+
+        lonv = self.nc.createVariable("lon", "d", ("lon",))
         for k, v in _lonattrs.items():
             lonv.setncattr(k, v)
         lonv[:] = lon
-        for vk in varkeys:
-            self.defvar(vk)
 
-    def defvar(self, vk, dims=None, **attrs):
+        if varkeys:
+            for vk in varkeys:
+                self.defvar(vk)
+
+    def defvar(self, vk: str, dims: Optional[Tuple[str, ...]] = None, **attrs: Any):
         """
-        Define a variable using HEMCO expectations
+        Define a variable using HEMCO expectations.
 
-        Arguments
-        ---------
+        Parameters
+        ----------
         vk : str
-            Name of the output variable
-        dims : tuple
-            Named dimensions of the output variable
-        attrs : mappable
-            Variable attributes
-
-        Results
-        -------
-        None
+            Name of the output variable.
+        dims : tuple of str, optional
+            Named dimensions of the output variable.
+        **attrs : Any
+            Variable attributes.
         """
-        ncf = self.nc
-        nr = len(ncf.dimensions['lat'])
-        nc = len(ncf.dimensions['lon'])
+        nr = len(self.nc.dimensions["lat"])
+        nc = len(self.nc.dimensions["lon"])
         chunkdefsizes = dict(time=1, lev=1, lat=nr, lon=nc)
         if dims is None:
-            if 'lev' not in ncf.dimensions:
-                dims = ('time', 'lat', 'lon')
-            else:
-                dims = ('time', 'lev', 'lat', 'lon')
+            dims = (
+                ("time", "lev", "lat", "lon")
+                if "lev" in self.nc.dimensions
+                else ("time", "lat", "lon")
+            )
         chunks = [chunkdefsizes[dk] for dk in dims]
-        vv = ncf.createVariable(
-            vk, 'f', dims, chunksizes=chunks, zlib=True, complevel=1
+        vv = self.nc.createVariable(
+            vk, "f", dims, chunksizes=chunks, zlib=True, complevel=1
         )
-        vv.setncattr('standard_name', vk)
-        vv.setncattr('units', 'unknown')
+        vv.setncattr("standard_name", vk)
+        vv.setncattr("units", "unknown")
         for pk, pv in attrs.items():
             vv.setncattr(pk, pv)
 
-    def setattrs(self, **attrs):
+    def addvar(
+        self,
+        key: str,
+        vals: np.ndarray,
+        dims: Optional[Tuple[str, ...]] = None,
+        **attrs: Any,
+    ):
         """
-        Add attributes to file
+        Add data to a variable, defining it if necessary.
 
-        Arguments
-        ---------
-        attrs : mappable
-            Attributes to add to file
-
-        Results
-        -------
-        None
-        """
-        for k, v in attrs.items():
-            self.nc.setncattr(k, v)
-
-    def addvar(self, key, vals, dims=None, **attrs):
-        """
-        Add a variable (defining if necessary using HEMCO expectations)
-
-        Arguments
-        ---------
+        Parameters
+        ----------
         key : str
-            Name of variable
-        vals : array
-            Values to add to the variable
-        dims : tuple
-            Named dimensions
-        attrs : mappable
-            Attributes to add to variable
-
-        Results
-        -------
-        None
+            Name of the variable.
+        vals : np.ndarray
+            Values to add.
+        dims : tuple of str, optional
+            Named dimensions.
+        **attrs : Any
+            Variable attributes.
         """
-        nc = self.nc
-        if key not in nc.variables:
+        if key not in self.nc.variables:
             self.defvar(key, dims=dims, **attrs)
-        vv = nc.variables[key]
+        vv = self.nc.variables[key]
         for pk, pv in attrs.items():
             vv.setncattr(pk, pv)
         nt = vals.shape[0]
         vv[:nt] = vals
 
     def close(self):
-        self.nc.close()
+        """Close the NetCDF file."""
+        if hasattr(self, "nc") and self.nc:
+            self.nc.close()
 
     def __del__(self):
-        self.nc.close()
-        del self.nc
+        self.close()
 
 
-def to_ioapi(ef, path, **wopts):
+def to_ioapi(ef: xr.Dataset, path: str, **wopts: Any):
     """
-    Arguments
-    ---------
+    Write Dataset to a NetCDF file following IOAPI conventions.
+
+    Parameters
+    ----------
     ef : xarray.Dataset
-        Emission file with stime dimension to allow construcing the TFLAG
-        variable.
+        Emission dataset with time dimension to allow constructing TFLAG.
     path : str
-        Path for output file written as an IOAPI file.
-    wopts : mappable
-        Write options for xarray.to_netcdf command.
-
-    Returns
-    -------
-    None
+        Output file path.
+    **wopts : Any
+        Write options for xarray.to_netcdf.
     """
-    import xarray as xr
-    import numpy as np
-    import pandas as pd
-    wopts.setdefault('mode', 'ws')
-    wopts.setdefault('format', 'NETCDF4_CLASSIC')
-    wopts.setdefault('unlimited_dims', ('TSTEP',))
-    if 'TFLAG' not in ef:
-        if 'time' in ef:
-            time = ef.time.dt
-        else:
-            nt = ef.sizes['TSTEP']
-            assert ef.attrs['TSTEP'] in (0, 10000)
-            dt = pd.to_timedelta('1h') * np.arange(nt)
-            time = pd.to_datetime([ef.SDATE] * nt, format='%Y%j') + dt
-        date = time.strftime('%Y%j').astype('i')
-        time = time.strftime('%H%M%S').astype('i')
-        tflag = xr.DataArray(
-            np.array([date, time]).T,  # t, 2
-            dims=('TSTEP', 'DATE-TIME'),
-            attrs=dict(
-                units='<YYYYJJJ,HHMMSS>', long_name='TFLAG'.ljust(16),
-                var_desc='TFLAG'.ljust(80)
-            )
-        ).expand_dims(VAR=np.arange(len(ef.data_vars))).transpose(
-            'TSTEP', 'VAR', 'DATE-TIME'
+    wopts.setdefault("mode", "ws")
+    wopts.setdefault("format", "NETCDF4_CLASSIC")
+    wopts.setdefault("unlimited_dims", ("TSTEP",))
+    if "TFLAG" not in ef:
+        nt = ef.sizes.get("TSTEP", 1)
+        # Approximate time if missing
+        time_vals = (
+            ef.time
+            if "time" in ef
+            else pd.to_datetime([ef.attrs.get("SDATE", 2022001)] * nt)
         )
-        ef['TFLAG'] = tflag
+        date = time_vals.strftime("%Y%j").astype("i")
+        time = time_vals.strftime("%H%M%S").astype("i")
+        tflag = (
+            xr.DataArray(
+                np.array([date, time]).T,
+                dims=("TSTEP", "DATE-TIME"),
+            )
+            .expand_dims(VAR=np.arange(len(ef.data_vars)))
+            .transpose("TSTEP", "VAR", "DATE-TIME")
+        )
+        ef["TFLAG"] = tflag
     ef.to_netcdf(path, **wopts)
 
 
-def symlinks(tmpl, dates, datetype=None, verbose=0):
+def symlinks(
+    tmpl: str,
+    dates: Union[pd.Series, str],
+    datetype: Optional[str] = None,
+    verbose: int = 0,
+):
     """
-    Arguments
-    ---------
+    Create symlinks for date-based files.
+
+    Parameters
+    ----------
     tmpl : str
-        strftime template for paths
+        strftime template for paths.
     dates : pd.Series or str
-        If Series, must have date index (destination date) and date values
-        (source)
-        If str, path to csv file with dates file as describe in Notes.
-    datetype: str or None
-        If dates is an instance of str, choose one of: aveday_Y, aveday_N,
-        mwdss_Y, mwdss_N, week_Y, week_N, all. Where Y/N denotes if "holidays"
-        have special treatment.
-    verbose: int
-        Level of verbosity
+        Source and destination dates mapping.
+    datetype : str, optional
+        Key for selecting the date column from a CSV file.
+    verbose : int, default 0
+        Verbosity level.
 
     Returns
     -------
-    links : list
-        List of links that were created
-
-    Notes
-    -----
-    Date,aveday_N,aveday_Y,mwdss_N,mwdss_Y,week_N,week_Y,all
-    20160401,20160405,20160405,20160405,20160405,20160408,20160408,20160401
-    ...
-
+    links : list of str
+        List of created symlink paths.
     """
-    import pandas as pd
     import os
-    if not isinstance(dates, pd.Series):
-        datepath = dates
-        df = pd.read_csv(datepath)
+
+    if isinstance(dates, str):
+        df = pd.read_csv(dates)
         df.columns = [k.strip() for k in df.columns]
-        inkey = datetype
-        outkey = df.columns[0]
-        df[inkey] = pd.to_datetime(df[inkey])
-        df[outkey] = pd.to_datetime(df[outkey])
-        dates = df[[inkey, outkey]].set_index(outkey)
+        df[datetype] = pd.to_datetime(df[datetype])
+        df[df.columns[0]] = pd.to_datetime(df[df.columns[0]])
+        dates_ser = df[[datetype, df.columns[0]]].set_index(df.columns[0])[datetype]
+    else:
+        dates_ser = dates
+
     links = []
-    for outdate, indate in dates.items():
+    for outdate, indate in dates_ser.items():
         src = indate.strftime(tmpl)
         dst = outdate.strftime(tmpl)
         if not os.path.exists(dst):
             if not os.path.exists(src):
-                if verbose > 0:
-                    print(f'{src} is missing; cannot make {dst}')
                 continue
             os.symlink(src, dst)
             links.append(dst)
     return links
 
 
-def gd_file(ef):
+def gd_file(ef: xr.Dataset) -> xr.Dataset:
     """
-    Add lon/lat and rename TSTEP as time.
+    Add lon/lat coordinates and rename dimensions for gridded CMAQ datasets.
 
-    Arguments
-    ---------
+    Parameters
+    ----------
     ef : xarray.Dataset
-        ef must have the crs attribute and TSTEP coordinate variable
+        Input dataset with 'crs' attribute and ROW/COL dimensions.
 
     Returns
     -------
-    gf : xarray.Dataset
-        Same as ef, but has additional variables lon, lat, and time. TFLAG is
-        removed.
+    ef : xarray.Dataset
+        Modified dataset with 'lon', 'lat', and 'time' meta-variables.
     """
-    import pyproj
-    ef = ef.isel(
-        LAY=0, drop=True
-    ).rename(TSTEP='time')
-    proj = pyproj.Proj(ef.crs)
-    Y, X = xr.broadcast(ef.ROW, ef.COL)
-    LON, LAT = proj(X, Y, inverse=True)
-    attrs = dict(units='degrees_east', long_name='longitude')
-    ef['lon'] = ('ROW', 'COL'), LON, attrs
-    attrs = dict(units='degrees_north', long_name='latitude')
-    ef['lat'] = ('ROW', 'COL'), LAT, attrs
-    del ef['TFLAG']
+    # Ensure time coordinate is present
+    ef = parse_ioapi_time(ef)
+
+    # If xregrid is available, use it to reconstruct the grid from IOAPI metadata
+    if xregrid is not None and ("lon" not in ef or "lat" not in ef):
+        try:
+            # create_grid_from_ioapi expects specific keys
+            grid_ds = create_grid_from_ioapi(ef.attrs, add_bounds=False)
+            # Standardize dimension names: xregrid uses x/y, CMAQ uses COL/ROW
+            rename_map = {}
+            if "y" in grid_ds.dims:
+                rename_map["y"] = "ROW"
+            if "x" in grid_ds.dims:
+                rename_map["x"] = "COL"
+            if rename_map:
+                grid_ds = grid_ds.rename(rename_map)
+
+            # Merge coordinates into the dataset
+            ef = ef.assign_coords(lat=grid_ds.lat, lon=grid_ds.lon)
+        except (KeyError, ValueError):
+            pass
+
+    # Fallback to legacy pyproj logic if coordinates still missing
+    if "lon" not in ef or "lat" not in ef:
+        import pyproj
+
+        proj = pyproj.Proj(ef.crs)
+        Y, X = xr.broadcast(ef.ROW, ef.COL)
+        LON, LAT = proj(X.data, Y.data, inverse=True)
+        ef["lon"] = (
+            ("ROW", "COL"),
+            LON,
+            dict(units="degrees_east", long_name="longitude"),
+        )
+        ef["lat"] = (
+            ("ROW", "COL"),
+            LAT,
+            dict(units="degrees_north", long_name="latitude"),
+        )
+
+    if "LAY" in ef.dims:
+        ef = ef.isel(LAY=0, drop=True)
+    if "TSTEP" in ef.dims:
+        ef = ef.rename(TSTEP="time")
+
     return ef

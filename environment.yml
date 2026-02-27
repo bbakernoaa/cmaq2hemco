@@ -1,0 +1,24 @@
+name: aero
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - esmf
+  - esmpy
+  - xarray
+  - dask
+  - netcdf4
+  - pandas
+  - pyproj
+  - requests
+  - scipy
+  - cartopy
+  - hvplot
+  - geoviews
+  - pytest
+  - ruff
+  - boto3
+  - h5netcdf
+  - pip
+  - pip:
+    - git+https://github.com/bbakernoaa/xregrid.git

@@ -13,27 +13,29 @@
 import os
 import sys
 from sphinx_gallery.sorting import ExplicitOrder
-# from sphinx_gallery.sorting import ExampleTitleSortKey 
+
+# from sphinx_gallery.sorting import ExampleTitleSortKey
 from sphinx_gallery.sorting import FileNameSortKey
-sys.path.insert(0, os.path.abspath('..'))
+
+sys.path.insert(0, os.path.abspath(".."))
 
 
-with open('../../pyrsig/__init__.py', 'r') as initf:
+with open("../../pyrsig/__init__.py", "r") as initf:
     for _l in initf.readlines():
-        if _l.startswith('__version__ = '):
-            release = _l.split(' = ')[-1]
+        if _l.startswith("__version__ = "):
+            release = _l.split(" = ")[-1]
             break
     else:
-        release = '0.0.0'
+        release = "0.0.0"
 
 # -- Project information -----------------------------------------------------
 
-project = 'pyrsig'
-copyright = '2023, Barron H. Henderson'
-author = 'Barron H. Henderson'
+project = "pyrsig"
+copyright = "2023, Barron H. Henderson"
+author = "Barron H. Henderson"
 
 # The full version, including alpha/beta/rc tags
-release = '0.4.5'
+release = "0.4.5"
 
 
 # -- General configuration ---------------------------------------------------
@@ -42,54 +44,56 @@ release = '0.4.5'
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'sphinx.ext.autodoc',
-    'sphinx.ext.autosummary',
-    'sphinx.ext.githubpages',
-    'sphinx.ext.intersphinx',
-    'sphinx.ext.mathjax',
-    'sphinx.ext.viewcode',
-    'IPython.sphinxext.ipython_directive',
-    'IPython.sphinxext.ipython_console_highlighting',
-    'matplotlib.sphinxext.plot_directive',
-    'sphinx_copybutton',
-    'sphinx_design',
+    "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
+    "sphinx.ext.githubpages",
+    "sphinx.ext.intersphinx",
+    "sphinx.ext.mathjax",
+    "sphinx.ext.viewcode",
+    "IPython.sphinxext.ipython_directive",
+    "IPython.sphinxext.ipython_console_highlighting",
+    "matplotlib.sphinxext.plot_directive",
+    "sphinx_copybutton",
+    "sphinx_design",
     #'sphinx_rtd_theme',
-    'myst_nb',
-    'sphinx_gallery.gen_gallery',
-    'sphinx.ext.napoleon',
+    "myst_nb",
+    "sphinx_gallery.gen_gallery",
+    "sphinx.ext.napoleon",
 ]
 
 sphinx_gallery_conf = {
-    'examples_dirs': '../../examples',
-    'gallery_dirs': 'auto_examples',
-    'subsection_order': ExplicitOrder([
-        '../../examples/getdata',
-        '../../examples/timeseries',
-        '../../examples/oversample',
-        '../../examples/maps',
-    ]),
-    'within_subsection_order': FileNameSortKey,
+    "examples_dirs": "../../examples",
+    "gallery_dirs": "auto_examples",
+    "subsection_order": ExplicitOrder(
+        [
+            "../../examples/getdata",
+            "../../examples/timeseries",
+            "../../examples/oversample",
+            "../../examples/maps",
+        ]
+    ),
+    "within_subsection_order": FileNameSortKey,
 }
 
 # Generate the API documentation when building
-autoclass_content = 'both'
+autoclass_content = "both"
 autosummary_generate = True
 autosummary_imported_members = True
 
 html_sidebars = {
-    'userguide': ['searchbox.html', 'sidebar-nav-bs.html'],
-    'API': ['searchbox.html', 'sidebar-nav-bs.html'],
-    'examples': ['searchbox.html', 'sidebar-nav-bs.html'],
-    'notebook-gallery': ['searchbox.html', 'sidebar-nav-bs.html'],
+    "userguide": ["searchbox.html", "sidebar-nav-bs.html"],
+    "API": ["searchbox.html", "sidebar-nav-bs.html"],
+    "examples": ["searchbox.html", "sidebar-nav-bs.html"],
+    "notebook-gallery": ["searchbox.html", "sidebar-nav-bs.html"],
 }
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+templates_path = ["_templates"]
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = ['_build', '**.ipynb_checkpoints']
+exclude_patterns = ["_build", "**.ipynb_checkpoints"]
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -102,4 +106,4 @@ exclude_patterns = ['_build', '**.ipynb_checkpoints']
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+html_static_path = ["_static"]
