@@ -356,8 +356,12 @@ def plumerise_briggs(
         dz_neutral_loF_hiX = (21.4 * F ** (3 / 4.0)) / u
         dz_neutral_hiF_hiX = (38.7 * F ** (3 / 5.0)) / u
 
-        dz_loF = xr.where(x < (49 * F ** (5 / 8.0)), dz_neutral_loF_loX, dz_neutral_loF_hiX)
-        dz_hiF = xr.where(x < (119 * F ** (2 / 5.0)), dz_neutral_loF_loX, dz_neutral_hiF_hiX)
+        dz_loF = xr.where(
+            x < (49 * F ** (5 / 8.0)), dz_neutral_loF_loX, dz_neutral_loF_hiX
+        )
+        dz_hiF = xr.where(
+            x < (119 * F ** (2 / 5.0)), dz_neutral_loF_loX, dz_neutral_hiF_hiX
+        )
         dz = xr.where(F < 55, dz_loF, dz_hiF)
     else:
         S2 = theta_lapse * g / temp_a
@@ -586,8 +590,8 @@ def pt2hemco(
 
     clev = _deflevs[:nk]
     tis = (
-        (pf.time - pf.time.min()).dt.total_seconds() / 3600
-    ).round(0).astype("i").data
+        ((pf.time - pf.time.min()).dt.total_seconds() / 3600).round(0).astype("i").data
+    )
     pf["ti"] = ("time",), tis
     pf["ki"] = ("stack",), kis
     pf["ri"] = ("stack",), ris
@@ -597,7 +601,9 @@ def pt2hemco(
     datakeys = [
         k
         for k, v in pf.data_vars.items()
-        if (k not in ("TFLAG", "lon", "lat", "ti", "ki", "ri", "ci") and len(v.dims) > 1)
+        if (
+            k not in ("TFLAG", "lon", "lat", "ti", "ki", "ri", "ci") and len(v.dims) > 1
+        )
     ]
     outf = hemcofile(
         path, pf.time, clat, clon, lev=clev, varkeys=datakeys, attrs=pf.attrs
@@ -902,7 +908,6 @@ def gd2matrix(gf: xr.Dataset, elat: np.ndarray, elon: np.ndarray) -> pd.DataFram
     )
     # Approximate cell polygons
     dx = gf.attrs.get("XCELL", 12000.0)
-    dy = gf.attrs.get("YCELL", 12000.0)
     # Note: This legacy function remains somewhat eager for back-compat
     qgeodf["geometry"] = qgeodf.geometry.buffer(dx / 200000, cap_style="square")
     qgeodf["original_area"] = qgeodf.geometry.area
@@ -913,7 +918,9 @@ def gd2matrix(gf: xr.Dataset, elat: np.ndarray, elon: np.ndarray) -> pd.DataFram
         LONI, LATJ = np.meshgrid(loni, latj)
         LON, LAT = np.meshgrid(clon, clat)
         hgeodf = gpd.GeoDataFrame(
-            dict(lat=LAT.ravel(), lon=LON.ravel(), lati=LATJ.ravel(), loni=LONI.ravel()),
+            dict(
+                lat=LAT.ravel(), lon=LON.ravel(), lati=LATJ.ravel(), loni=LONI.ravel()
+            ),
             geometry=gpd.points_from_xy(LON.ravel(), LAT.ravel()),
             crs=4326,
         )
@@ -1344,7 +1351,11 @@ class hemcofile:
             vv.setncattr(pk, pv)
 
     def addvar(
-        self, key: str, vals: np.ndarray, dims: Optional[Tuple[str, ...]] = None, **attrs: Any
+        self,
+        key: str,
+        vals: np.ndarray,
+        dims: Optional[Tuple[str, ...]] = None,
+        **attrs: Any,
     ):
         """
         Add data to a variable, defining it if necessary.
@@ -1397,7 +1408,9 @@ def to_ioapi(ef: xr.Dataset, path: str, **wopts: Any):
         nt = ef.sizes.get("TSTEP", 1)
         # Approximate time if missing
         time_vals = (
-            ef.time if "time" in ef else pd.to_datetime([ef.attrs.get("SDATE", 2022001)] * nt)
+            ef.time
+            if "time" in ef
+            else pd.to_datetime([ef.attrs.get("SDATE", 2022001)] * nt)
         )
         date = time_vals.strftime("%Y%j").astype("i")
         time = time_vals.strftime("%H%M%S").astype("i")
@@ -1414,7 +1427,10 @@ def to_ioapi(ef: xr.Dataset, path: str, **wopts: Any):
 
 
 def symlinks(
-    tmpl: str, dates: Union[pd.Series, str], datetype: Optional[str] = None, verbose: int = 0
+    tmpl: str,
+    dates: Union[pd.Series, str],
+    datetype: Optional[str] = None,
+    verbose: int = 0,
 ):
     """
     Create symlinks for date-based files.
