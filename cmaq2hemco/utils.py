@@ -794,6 +794,48 @@ def gd2hemco(
     return outf
 
 
+def _ioapi_crs(attrs: dict) -> str:
+    """
+    Construct a PROJ string from IOAPI global attributes.
+
+    Parameters
+    ----------
+    attrs : dict
+        Global attributes from an IOAPI NetCDF file.
+
+    Returns
+    -------
+    proj_str : str
+        PROJ string representing the coordinate system.
+    """
+    gdtyp = attrs.get("GDTYP")
+    if gdtyp == 2:  # Lambert Conformal
+        p_alp = attrs.get("P_ALP")
+        p_bet = attrs.get("P_BET")
+        p_gam = attrs.get("P_GAM")
+        xcent = attrs.get("XCENT")
+        ycent = attrs.get("YCENT")
+        return (
+            f"+proj=lcc +lat_1={p_alp} +lat_2={p_bet} +lat_0={ycent} "
+            f"+lon_0={xcent} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs"
+        )
+    elif gdtyp == 1:  # Lat-Lon
+        return "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
+    elif gdtyp == 6:  # Polar Stereographic
+        p_alp = attrs.get("P_ALP")
+        p_bet = attrs.get("P_BET")
+        p_gam = attrs.get("P_GAM")
+        xcent = attrs.get("XCENT")
+        ycent = attrs.get("YCENT")
+        return (
+            f"+proj=stere +lat_0={p_alp} +lat_ts={p_bet} +lon_0={p_gam} "
+            f"+k=1 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs"
+        )
+    else:
+        # Fallback or raise error
+        return "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
+
+
 def _add_bounds_to_cmaq(ds: xr.Dataset) -> xr.Dataset:
     """
     Add approximate bounds to a CMAQ dataset for xregrid.
@@ -810,7 +852,10 @@ def _add_bounds_to_cmaq(ds: xr.Dataset) -> xr.Dataset:
     """
     import pyproj
 
-    proj = pyproj.Proj(ds.crs)
+    crs = ds.attrs.get("crs", getattr(ds, "crs", None))
+    if crs is None:
+        crs = _ioapi_crs(ds.attrs)
+    proj = pyproj.Proj(crs)
     # Use coordinates directly if possible, else assume from attributes
     x = ds.COL
     y = ds.ROW
@@ -1514,7 +1559,10 @@ def gd_file(ef: xr.Dataset) -> xr.Dataset:
     if "lon" not in ef or "lat" not in ef:
         import pyproj
 
-        proj = pyproj.Proj(ef.crs)
+        crs = ef.attrs.get("crs", getattr(ef, "crs", None))
+        if crs is None:
+            crs = _ioapi_crs(ef.attrs)
+        proj = pyproj.Proj(crs)
         Y, X = xr.broadcast(ef.ROW, ef.COL)
         LON, LAT = proj(X.data, Y.data, inverse=True)
         ef["lon"] = (
