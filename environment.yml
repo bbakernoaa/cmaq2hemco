@@ -18,7 +18,7 @@ dependencies:
   - pytest
   - ruff
   - boto3
+  - h5netcdf
   - pip
   - pip:
-    - cmaqsatproc
     - git+https://github.com/bbakernoaa/xregrid.git

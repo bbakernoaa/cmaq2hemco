@@ -13,6 +13,7 @@ import xarray as xr
 try:
     import xregrid
     from xregrid import Regridder
+    from xregrid.utils import create_grid_from_ioapi
 except ImportError:
     xregrid = None
 
@@ -35,6 +36,7 @@ __all__ = [
     "symlinks",
     "gd_file",
     "regrid_dataset",
+    "parse_ioapi_time",
 ]
 
 # https://wiki.seas.harvard.edu/geos-chem/index.php/GEOS-Chem_vertical_grids
@@ -354,12 +356,8 @@ def plumerise_briggs(
         dz_neutral_loF_hiX = (21.4 * F ** (3 / 4.0)) / u
         dz_neutral_hiF_hiX = (38.7 * F ** (3 / 5.0)) / u
 
-        dz_loF = xr.where(
-            x < (49 * F ** (5 / 8.0)), dz_neutral_loF_loX, dz_neutral_loF_hiX
-        )
-        dz_hiF = xr.where(
-            x < (119 * F ** (2 / 5.0)), dz_neutral_loF_loX, dz_neutral_hiF_hiX
-        )
+        dz_loF = xr.where(x < (49 * F ** (5 / 8.0)), dz_neutral_loF_loX, dz_neutral_loF_hiX)
+        dz_hiF = xr.where(x < (119 * F ** (2 / 5.0)), dz_neutral_loF_loX, dz_neutral_hiF_hiX)
         dz = xr.where(F < 55, dz_loF, dz_hiF)
     else:
         S2 = theta_lapse * g / temp_a
@@ -370,6 +368,48 @@ def plumerise_briggs(
         dz = np.minimum(dz, dz_stable_3)
 
     return dz
+
+
+def parse_ioapi_time(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Parse IOAPI TFLAG into a standard Xarray time coordinate.
+
+    Parameters
+    ----------
+    ds : xarray.Dataset
+        Dataset containing IOAPI 'TFLAG' variable.
+
+    Returns
+    -------
+    ds : xarray.Dataset
+        Dataset with 'time' coordinate and 'TFLAG' removed.
+    """
+    if "TFLAG" not in ds:
+        return ds
+
+    # TFLAG is (TSTEP, VAR, DATE-TIME)
+    # where DATE-TIME index 0 is YYYYJJJ and index 1 is HHMMSS
+    tflag = ds.TFLAG.data
+    dates = tflag[:, 0, 0]  # YYYYJJJ
+    times = tflag[:, 0, 1]  # HHMMSS
+
+    # Convert to datetime strings
+    dt_str = [f"{d:07d}{t:06d}" for d, t in zip(dates, times)]
+    time_coords = pd.to_datetime(dt_str, format="%Y%j%H%M%S")
+
+    # Handle conflicts if a variable is named TSTEP but is not 1D
+    if "TSTEP" in ds.variables and ds["TSTEP"].ndim > 1:
+        ds = ds.rename({"TSTEP": "IOAPI_TSTEP"})
+
+    # Rename dimension TSTEP to time if it exists
+    if "TSTEP" in ds.dims:
+        ds = ds.rename_dims({"TSTEP": "time"})
+
+    ds = ds.assign_coords(time=time_coords)
+
+    if "TFLAG" in ds:
+        del ds["TFLAG"]
+    return ds
 
 
 def open_date(date: Any, tmpl: str, bucket: str, cache: bool = True) -> xr.Dataset:
@@ -402,7 +442,6 @@ def open_date(date: Any, tmpl: str, bucket: str, cache: bool = True) -> xr.Datas
     import os
 
     import boto3
-    import cmaqsatproc as csp
     from botocore import UNSIGNED
     from botocore.client import Config
 
@@ -411,20 +450,40 @@ def open_date(date: Any, tmpl: str, bucket: str, cache: bool = True) -> xr.Datas
     path = date_dt.strftime(tmpl)
     dest = os.path.join(bucket, path)
 
+    def _open_file(source: Any) -> xr.Dataset:
+        # Use netcdf4 or scipy engine for NetCDF-3 IOAPI files
+        try:
+            # Try netcdf4 first (supports NetCDF-4 and NetCDF-3)
+            return xr.open_dataset(source, engine="netcdf4")
+        except Exception:
+            # Fallback to scipy for NetCDF-3 from stream
+            return xr.open_dataset(source, engine="scipy")
+
     if cache:
         if not os.path.exists(dest):
             res = client.list_objects(Bucket=bucket, Prefix=path)
             if len(res.get("Contents", [])) != 1:
-                raise IOError(f"{path} does not exist in {bucket}")
+                # Try .gz fallback if path doesn't exist
+                if not path.endswith(".gz"):
+                    path_gz = path + ".gz"
+                    res_gz = client.list_objects(Bucket=bucket, Prefix=path_gz)
+                    if len(res_gz.get("Contents", [])) == 1:
+                        path = path_gz
+                        dest = dest + ".gz"
+                    else:
+                        raise IOError(f"{path} does not exist in {bucket}")
+                else:
+                    raise IOError(f"{path} does not exist in {bucket}")
+
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             client.download_file(bucket, path, dest)
 
         if dest.endswith(".gz"):
             with gzip.open(dest, "rb") as gz:
                 bdy = io.BytesIO(gz.read())
-            f = csp.open_ioapi(bdy, engine="scipy")
+            f = _open_file(bdy)
         else:
-            f = csp.open_ioapi(dest)
+            f = _open_file(dest)
     else:
         res = client.list_objects(Bucket=bucket, Prefix=path)
         if len(res.get("Contents", [])) != 1:
@@ -434,9 +493,9 @@ def open_date(date: Any, tmpl: str, bucket: str, cache: bool = True) -> xr.Datas
         if path.endswith(".gz"):
             bdy_data = gzip.decompress(bdy_data)
         bdy = io.BytesIO(bdy_data)
-        f = csp.open_ioapi(bdy, engine="scipy")
+        f = _open_file(bdy)
 
-    return f
+    return parse_ioapi_time(f)
 
 
 def pt2hemco(
@@ -527,8 +586,8 @@ def pt2hemco(
 
     clev = _deflevs[:nk]
     tis = (
-        ((pf.time - pf.time.min()).dt.total_seconds() / 3600).round(0).astype("i").data
-    )
+        (pf.time - pf.time.min()).dt.total_seconds() / 3600
+    ).round(0).astype("i").data
     pf["ti"] = ("time",), tis
     pf["ki"] = ("stack",), kis
     pf["ri"] = ("stack",), ris
@@ -538,9 +597,7 @@ def pt2hemco(
     datakeys = [
         k
         for k, v in pf.data_vars.items()
-        if (
-            k not in ("TFLAG", "lon", "lat", "ti", "ki", "ri", "ci") and len(v.dims) > 1
-        )
+        if (k not in ("TFLAG", "lon", "lat", "ti", "ki", "ri", "ci") and len(v.dims) > 1)
     ]
     outf = hemcofile(
         path, pf.time, clat, clon, lev=clev, varkeys=datakeys, attrs=pf.attrs
@@ -810,7 +867,7 @@ def gd2matrix(gf: xr.Dataset, elat: np.ndarray, elon: np.ndarray) -> pd.DataFram
     Parameters
     ----------
     gf : xarray.Dataset
-        Input gridded dataset presenting the csp.geodf interface.
+        Input gridded dataset presenting the spatial metadata.
     elat : np.ndarray
         Edges of grid latitudes in degrees_north.
     elon : np.ndarray
@@ -831,17 +888,32 @@ def gd2matrix(gf: xr.Dataset, elat: np.ndarray, elon: np.ndarray) -> pd.DataFram
     clon = (elon[:-1] + elon[1:]) / 2
     hdx = np.diff(elon).mean() / 2
     hdy = np.diff(elat).mean() / 2
-    qgeodf = gf.csp.geodf
+
+    # Fallback to manual GeoDataFrame creation
+    # This assumes standard CMAQ metadata or already present lat/lon
+    if "lat" not in gf or "lon" not in gf:
+        gf = gd_file(gf)
+
+    rows, cols = xr.broadcast(gf.ROW, gf.COL)
+    qgeodf = gpd.GeoDataFrame(
+        {"ROW": rows.data.ravel(), "COL": cols.data.ravel()},
+        geometry=gpd.points_from_xy(gf.lon.data.ravel(), gf.lat.data.ravel()),
+        crs=4326,
+    )
+    # Approximate cell polygons
+    dx = gf.attrs.get("XCELL", 12000.0)
+    dy = gf.attrs.get("YCELL", 12000.0)
+    # Note: This legacy function remains somewhat eager for back-compat
+    qgeodf["geometry"] = qgeodf.geometry.buffer(dx / 200000, cap_style="square")
     qgeodf["original_area"] = qgeodf.geometry.area
+
     if hdx == hdy:
         latj = np.arange(clat.size)
         loni = np.arange(clon.size)
         LONI, LATJ = np.meshgrid(loni, latj)
         LON, LAT = np.meshgrid(clon, clat)
         hgeodf = gpd.GeoDataFrame(
-            dict(
-                lat=LAT.ravel(), lon=LON.ravel(), lati=LATJ.ravel(), loni=LONI.ravel()
-            ),
+            dict(lat=LAT.ravel(), lon=LON.ravel(), lati=LATJ.ravel(), loni=LONI.ravel()),
             geometry=gpd.points_from_xy(LON.ravel(), LAT.ravel()),
             crs=4326,
         )
@@ -861,7 +933,8 @@ def gd2matrix(gf: xr.Dataset, elat: np.ndarray, elon: np.ndarray) -> pd.DataFram
         hgeodf = gpd.GeoDataFrame(
             dict(lat=lats, lon=lons, lati=latis, loni=lonis), geometry=geoms, crs=4326
         )
-    ol = gpd.overlay(qgeodf.reset_index(), hgeodf.to_crs(qgeodf.crs))
+
+    ol = gpd.overlay(qgeodf, hgeodf)
     ol["intx_area"] = ol.geometry.area
     ol["fraction"] = ol["intx_area"] / ol["original_area"]
     ol["ri"] = ol["ROW"].astype("i")
@@ -1092,19 +1165,53 @@ def se_file(sf: xr.Dataset, ef: xr.Dataset) -> xr.Dataset:
     ef : xarray.Dataset
         Combined dataset with dimensions ('time', 'stack').
     """
-    ef = ef.rename(ROW="stack", TSTEP="time")
-    sf = sf.isel(TSTEP=0, LAY=0, COL=0, drop=True).rename(ROW="stack")
+    # Robust renaming
+    rename_ef = {}
+    if "ROW" in ef.dims:
+        rename_ef["ROW"] = "stack"
+    if "TSTEP" in ef.dims:
+        rename_ef["TSTEP"] = "time"
+    if rename_ef:
+        ef = ef.rename(rename_ef)
+
+    # Ensure time coordinate is parsed if not already
+    ef = parse_ioapi_time(ef)
+
+    # sf is usually a single time/layer/col slice representing stack info
+    # We want to keep it simple and rename ROW to stack
+    isel_sf = {}
+    if "TSTEP" in sf.dims:
+        isel_sf["TSTEP"] = 0
+    if "LAY" in sf.dims:
+        isel_sf["LAY"] = 0
+    if "COL" in sf.dims:
+        isel_sf["COL"] = 0
+    if isel_sf:
+        sf = sf.isel(isel_sf, drop=True)
+
+    if "ROW" in sf.dims:
+        sf = sf.rename(ROW="stack")
+
     if "TFLAG" in sf:
         del sf["TFLAG"]
     if "TFLAG" in ef:
         del ef["TFLAG"]
+
     for k in sf.data_vars:
         if k not in ef:
             ef[k] = sf[k]
-    ef["lat"] = sf["LATITUDE"]
-    ef["lon"] = sf["LONGITUDE"]
-    del ef["LATITUDE"]
-    del ef["LONGITUDE"]
+
+    # Map latitude/longitude if present
+    if "LATITUDE" in sf:
+        ef["lat"] = sf["LATITUDE"]
+    if "LONGITUDE" in sf:
+        ef["lon"] = sf["LONGITUDE"]
+
+    if "LATITUDE" in ef:
+        del ef["LATITUDE"]
+    if "LONGITUDE" in ef:
+        del ef["LONGITUDE"]
+
     return ef
 
 
@@ -1237,11 +1344,7 @@ class hemcofile:
             vv.setncattr(pk, pv)
 
     def addvar(
-        self,
-        key: str,
-        vals: np.ndarray,
-        dims: Optional[Tuple[str, ...]] = None,
-        **attrs: Any,
+        self, key: str, vals: np.ndarray, dims: Optional[Tuple[str, ...]] = None, **attrs: Any
     ):
         """
         Add data to a variable, defining it if necessary.
@@ -1294,9 +1397,7 @@ def to_ioapi(ef: xr.Dataset, path: str, **wopts: Any):
         nt = ef.sizes.get("TSTEP", 1)
         # Approximate time if missing
         time_vals = (
-            ef.time
-            if "time" in ef
-            else pd.to_datetime([ef.attrs.get("SDATE", 2022001)] * nt)
+            ef.time if "time" in ef else pd.to_datetime([ef.attrs.get("SDATE", 2022001)] * nt)
         )
         date = time_vals.strftime("%Y%j").astype("i")
         time = time_vals.strftime("%H%M%S").astype("i")
@@ -1313,10 +1414,7 @@ def to_ioapi(ef: xr.Dataset, path: str, **wopts: Any):
 
 
 def symlinks(
-    tmpl: str,
-    dates: Union[pd.Series, str],
-    datetype: Optional[str] = None,
-    verbose: int = 0,
+    tmpl: str, dates: Union[pd.Series, str], datetype: Optional[str] = None, verbose: int = 0
 ):
     """
     Create symlinks for date-based files.
@@ -1374,18 +1472,49 @@ def gd_file(ef: xr.Dataset) -> xr.Dataset:
     ef : xarray.Dataset
         Modified dataset with 'lon', 'lat', and 'time' meta-variables.
     """
-    import pyproj
+    # Ensure time coordinate is present
+    ef = parse_ioapi_time(ef)
+
+    # If xregrid is available, use it to reconstruct the grid from IOAPI metadata
+    if xregrid is not None and ("lon" not in ef or "lat" not in ef):
+        try:
+            # create_grid_from_ioapi expects specific keys
+            grid_ds = create_grid_from_ioapi(ef.attrs, add_bounds=False)
+            # Standardize dimension names: xregrid uses x/y, CMAQ uses COL/ROW
+            rename_map = {}
+            if "y" in grid_ds.dims:
+                rename_map["y"] = "ROW"
+            if "x" in grid_ds.dims:
+                rename_map["x"] = "COL"
+            if rename_map:
+                grid_ds = grid_ds.rename(rename_map)
+
+            # Merge coordinates into the dataset
+            ef = ef.assign_coords(lat=grid_ds.lat, lon=grid_ds.lon)
+        except (KeyError, ValueError):
+            pass
+
+    # Fallback to legacy pyproj logic if coordinates still missing
+    if "lon" not in ef or "lat" not in ef:
+        import pyproj
+
+        proj = pyproj.Proj(ef.crs)
+        Y, X = xr.broadcast(ef.ROW, ef.COL)
+        LON, LAT = proj(X.data, Y.data, inverse=True)
+        ef["lon"] = (
+            ("ROW", "COL"),
+            LON,
+            dict(units="degrees_east", long_name="longitude"),
+        )
+        ef["lat"] = (
+            ("ROW", "COL"),
+            LAT,
+            dict(units="degrees_north", long_name="latitude"),
+        )
 
     if "LAY" in ef.dims:
         ef = ef.isel(LAY=0, drop=True)
     if "TSTEP" in ef.dims:
         ef = ef.rename(TSTEP="time")
 
-    proj = pyproj.Proj(ef.crs)
-    Y, X = xr.broadcast(ef.ROW, ef.COL)
-    LON, LAT = proj(X.data, Y.data, inverse=True)
-    ef["lon"] = (("ROW", "COL"), LON, dict(units="degrees_east", long_name="longitude"))
-    ef["lat"] = (("ROW", "COL"), LAT, dict(units="degrees_north", long_name="latitude"))
-    if "TFLAG" in ef:
-        del ef["TFLAG"]
     return ef

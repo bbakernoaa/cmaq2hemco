@@ -39,10 +39,13 @@ def open_gdemis(date, sector, cache=True):
     bucket = "epa-2022-modeling-platform"
     try:
         ef = open_date(date, epath, bucket, cache=cache)
-    except Exception as e:
-        print(e)
-        epath += ".gz"
-        ef = open_date(date, epath, bucket, cache=cache)
+    except Exception:
+        # Fallback to .gz is now handled inside open_date for cache=True
+        # but for safety and explicit control we try it here too
+        if not epath.endswith(".gz"):
+            ef = open_date(date, epath + ".gz", bucket, cache=cache)
+        else:
+            raise
     ef = gd_file(ef)
 
     return ef

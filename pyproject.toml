@@ -22,8 +22,8 @@ dependencies = [
     "pandas",
     "xarray",
     "requests",
-    "cmaqsatproc",
     "netcdf4",
+    "h5netcdf",
     "xregrid @ git+https://github.com/bbakernoaa/xregrid.git",
 ]
 
