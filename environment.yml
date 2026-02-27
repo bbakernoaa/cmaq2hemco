@@ -17,6 +17,7 @@ dependencies:
   - geoviews
   - pytest
   - ruff
+  - boto3
   - pip
   - pip:
     - cmaqsatproc

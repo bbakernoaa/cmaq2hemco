@@ -20,6 +20,11 @@ jobs:
         init-shell: bash
         cache-environment: true
 
+    - name: Install package
+      shell: bash -l {0}
+      run: |
+        pip install -e .
+
     - name: Lint with ruff
       shell: bash -l {0}
       run: |

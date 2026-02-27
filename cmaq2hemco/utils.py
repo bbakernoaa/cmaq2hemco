@@ -230,6 +230,9 @@ def getmw(key: str, gc: str = "cb6r5_ae7_aq", nr: str = "cb6r5hap_ae7_aq") -> fl
     """
     Get the molecular weight (kg/mol) for a chemical mechanism species.
 
+    The species may be an explicit or lumped species, so weights are mechanism
+    specific.
+
     Parameters
     ----------
     key : str
@@ -308,6 +311,10 @@ def plumerise_briggs(
     """
     Briggs (1969, 1971, 1974) equations of Plume Rise.
 
+    Approximates calculations used by CMAQ and SMOKE to calculate plume rise.
+    On pg 868, Table 18.4 gives 7 equations -- 3 for stable conditions and
+    4 for neutral/unstable conditions.
+
     Parameters
     ----------
     stkdm : float or xr.DataArray
@@ -374,7 +381,7 @@ def open_date(date: Any, tmpl: str, bucket: str, cache: bool = True) -> xr.Datas
     date : str or datetime-like
         Date parsable by pandas.to_datetime.
     tmpl : str
-        strftime template for date file.
+        strftime template for date file (e.g., MCIP/12US1/GRIDCRO2D.12US1.35L.%y%m%d).
     bucket : str
         S3 Bucket name.
     cache : bool, default True
@@ -447,32 +454,35 @@ def pt2hemco(
     """
     Convert a point source file to a hemco-ready file.
 
+    Allocates emissions to level based on stack height (STKHT) and Briggs
+    plume rise.
+
     Parameters
     ----------
     path : str
         Path to save as HEMCO file.
     pf : xarray.Dataset
-        Point source dataset.
+        Point source dataset from se_file.
     elat : np.ndarray
         Edge latitudes for regular grid.
     elon : np.ndarray
         Edge longitudes for regular grid.
     ez : np.ndarray, optional
-        Edge altitudes in meters.
+        Edge altitudes in meters for vertical structure.
     nk : int, default 11
-        Number of vertical levels.
+        Number of vertical levels to use if ez not specified.
     temp_a : float, default 288.15
-        Ambient temperature (K).
+        Ambient temperature (K) for plume rise.
     pres_a : float, default 101325
-        Ambient pressure (Pa).
+        Ambient pressure (Pa) for plume rise.
     u : float, default 2.5
-        Wind speed (m/s).
+        Wind speed (m/s) for plume rise.
     verbose : int, default 0
         Verbosity level.
 
     Returns
     -------
-    hemcofile
+    outf : hemcofile
         HEMCO file object.
     """
     import warnings
@@ -573,11 +583,12 @@ def regrid_dataset(
     ds : xarray.Dataset
         Source dataset.
     target_grid : xarray.Dataset
-        Target grid dataset containing 'lat' and 'lon' (and bounds for conservative).
+        Target grid dataset containing 'lat' and 'lon' (and boundaries for
+        conservative).
     method : str, default 'conservative'
-        Regridding method.
+        Regridding method (bilinear, conservative, nearest_s2d, etc.).
     reuse_weights : bool, default True
-        Whether to save and reuse weights.
+        Whether to save and reuse weights from disk.
     weights_file : str, default 'weights.nc'
         Path to weights file.
     **kwargs : Any
@@ -586,7 +597,7 @@ def regrid_dataset(
     Returns
     -------
     out_ds : xarray.Dataset
-        Regridded dataset with updated history.
+        Regridded dataset with updated scientific provenance in history.
 
     Raises
     ------
@@ -640,13 +651,13 @@ def gd2hemco(
     Parameters
     ----------
     path : str
-        Output path.
+        Output file path.
     gf : xarray.Dataset
-        Source gridded emissions.
+        Source gridded emissions dataset.
     elat : np.ndarray
-        Edge latitudes for target.
+        Edge latitudes for target grid.
     elon : np.ndarray
-        Edge longitudes for target.
+        Edge longitudes for target grid.
     method : str, default 'conservative'
         Regridding method.
     reuse_weights : bool, default True
@@ -654,7 +665,7 @@ def gd2hemco(
     weights_file : str, default 'weights.nc'
         File to save/load weights.
     verbose : int, default 0
-        Verbosity.
+        Verbosity level.
 
     Returns
     -------
@@ -727,12 +738,12 @@ def _add_bounds_to_cmaq(ds: xr.Dataset) -> xr.Dataset:
     Parameters
     ----------
     ds : xarray.Dataset
-        Input CMAQ dataset.
+        Input CMAQ dataset in projected coordinates.
 
     Returns
     -------
     ds : xarray.Dataset
-        Dataset with 'lat_b' and 'lon_b' added.
+        Dataset with 'lat_b' and 'lon_b' corner coordinates added.
     """
     import pyproj
 
@@ -766,24 +777,25 @@ def gd2hemco_fast(
 ) -> "hemcofile":
     """
     Fast regridding using xregrid conservative method (AERO Protocol).
-    Replaces old bilinear implementation.
+
+    Replaces old bilinear implementation for improved mass conservation.
 
     Parameters
     ----------
     path : str
-        Output path.
+        Output file path.
     gf : xarray.Dataset
-        Source gridded emissions.
+        Source gridded emissions dataset.
     elat : np.ndarray
-        Edge latitudes for target.
+        Edge latitudes for target grid.
     elon : np.ndarray
-        Edge longitudes for target.
+        Edge longitudes for target grid.
     verbose : int, default 0
-        Verbosity.
+        Verbosity level.
 
     Returns
     -------
-    hemcofile
+    outf : hemcofile
         HEMCO file object.
     """
     return gd2hemco(path, gf, elat, elon, method="conservative", verbose=verbose)
@@ -793,19 +805,22 @@ def gd2matrix(gf: xr.Dataset, elat: np.ndarray, elon: np.ndarray) -> pd.DataFram
     """
     Create a pixel to pixel fractional mapping matrix (Legacy).
 
+    Used for fractional area overlap interpolation before xregrid integration.
+
     Parameters
     ----------
     gf : xarray.Dataset
-        Input gridded dataset.
+        Input gridded dataset presenting the csp.geodf interface.
     elat : np.ndarray
-        Edge latitudes.
+        Edges of grid latitudes in degrees_north.
     elon : np.ndarray
-        Edge longitudes.
+        Edges of grid longitudes in degrees_east.
 
     Returns
     -------
-    pd.DataFrame
-        Mapping matrix.
+    gdf : pd.DataFrame
+        Mapping from ROW/COL to lon/lat cells with fraction of mass per
+        ROW/COL assigned to lon/lat.
     """
     import warnings
 
@@ -867,22 +882,22 @@ def unitconvert(
     Parameters
     ----------
     key : str
-        Species name.
+        Species name to get molecular weight.
     val : np.ndarray or xr.DataArray
-        Values to convert.
+        Values in input units to be converted.
     unit : str
-        Source unit.
+        Input unit string (e.g., 'moles/s', 'g/s/m2').
     area : np.ndarray or xr.DataArray, optional
-        Area of pixels.
+        Area for each pixel (m2) if input is not per unit area.
     inplace : bool, default True
-        Convert in-place.
+        If True, do the conversion in-place.
 
     Returns
     -------
     outval : np.ndarray or xr.DataArray
-        Converted values.
+        Converted values in kg/m2/s.
     outunit : str
-        Final unit.
+        Final unit string ('kg/m2/s').
 
     Raises
     ------
@@ -931,19 +946,22 @@ def unitconvert(
 
 def merge(fs: List[xr.Dataset], bf: Optional[xr.Dataset] = None) -> xr.Dataset:
     """
-    Combine many datasets into a single file.
+    Combine many datasets into a single dataset.
+
+    Uses the mass from all datasets and the vertical structure of the
+    tallest one.
 
     Parameters
     ----------
-    fs : list of xr.Dataset
-        Datasets to merge.
-    bf : xr.Dataset, optional
-        Basis dataset for coordinates.
+    fs : list of xarray.Dataset
+        List of dataset objects to merge.
+    bf : xarray.Dataset, optional
+        Basis dataset for coordinates. If None, uses the tallest.
 
     Returns
     -------
-    bf : xr.Dataset
-        Merged dataset.
+    bf : xarray.Dataset
+        Merged dataset with updated history.
     """
     import copy
 
@@ -981,29 +999,31 @@ def pt2gd(
     """
     Convert point file to a CMAQ gridded emission file.
 
+    Assigns vertical layers using Briggs plume rise calculations.
+
     Parameters
     ----------
     pf : xarray.Dataset
-        Point source dataset.
+        Point source dataset with 'time' and 'stack' dimensions.
     nr : int
-        Number of rows.
+        Number of rows for the output grid.
     nc : int
-        Number of columns.
+        Number of columns for the output grid.
     ez : np.ndarray, optional
-        Edge altitudes.
+        Edges of the vertical array being created (m).
     vgtyp : int, default -9999
-        Vertical grid type.
+        Vertical grid type using IOAPI parameters.
     vgtop : float, default 5000.0
-        Top of vertical grid.
+        Top of the vertical grid in Pascals.
     vglvls : np.ndarray, optional
-        Vertical levels.
+        Edges of the vertical grid in terrain-following system.
     byvar : bool, default True
-        Process by variable.
+        Perform calculations by variable to reduce memory load.
 
     Returns
     -------
     outf : xarray.Dataset
-        Gridded dataset.
+        Gridded dataset representing point source mass.
     """
     ns = pf.sizes["stack"]
     nt = pf.sizes["time"]
@@ -1058,19 +1078,19 @@ def pt2gd(
 
 def se_file(sf: xr.Dataset, ef: xr.Dataset) -> xr.Dataset:
     """
-    Combine stack file and emln file.
+    Combine stack group file and emission line file.
 
     Parameters
     ----------
     sf : xarray.Dataset
-        Stack group dataset.
+        CMAQ stack group dataset (dimensions include ROW).
     ef : xarray.Dataset
-        Emission line dataset.
+        CMAQ emission line dataset (dimensions include ROW, TSTEP).
 
     Returns
     -------
     ef : xarray.Dataset
-        Combined dataset.
+        Combined dataset with dimensions ('time', 'stack').
     """
     ef = ef.rename(ROW="stack", TSTEP="time")
     sf = sf.isel(TSTEP=0, LAY=0, COL=0, drop=True).rename(ROW="stack")
@@ -1090,21 +1110,21 @@ def se_file(sf: xr.Dataset, ef: xr.Dataset) -> xr.Dataset:
 
 def hemco_area(elat: np.ndarray, elon: np.ndarray, R: float = 6371007.2) -> np.ndarray:
     """
-    Calculate area of grid cells on sphere.
+    Calculate area of grid cells on a sphere.
 
     Parameters
     ----------
     elat : np.ndarray
-        Edge latitudes.
+        Edges that define a regular grid in degrees north.
     elon : np.ndarray
-        Edge longitudes.
+        Edges that define a regular grid in degrees east.
     R : float, default 6371007.2
-        Earth radius.
+        Radius of the Earth (meters).
 
     Returns
     -------
     A : np.ndarray
-        Area of grid cells.
+        Area in square meters with dimensions (nlat, nlon).
     """
     dx = np.diff(elon).mean()
     a = dx * np.pi / 180 * R**2 * np.diff(np.sin(np.radians(elat)))
@@ -1126,24 +1146,24 @@ class hemcofile:
         attrs: Optional[dict] = None,
     ):
         """
-        Initialize HEMCO file.
+        Initialize HEMCO NetCDF file.
 
         Parameters
         ----------
         path : str
-            File path.
+            Path of the NetCDF file to be created.
         time : Any
-            Time coordinates.
+            Times of the output file in UTC.
         lat : np.ndarray
-            Latitude coordinates.
+            Latitudes for midpoints of grid (degrees_north).
         lon : np.ndarray
-            Longitude coordinates.
+            Longitudes for midpoints of grid (degrees_east).
         lev : np.ndarray, optional
-            Vertical levels.
+            Vertical layers for the destination file.
         varkeys : list of str, optional
-            Variables to pre-define.
+            List of variables to pre-define.
         attrs : dict, optional
-            Global attributes.
+            Attributes for the output file.
         """
         import netCDF4
 
@@ -1187,14 +1207,14 @@ class hemcofile:
 
     def defvar(self, vk: str, dims: Optional[Tuple[str, ...]] = None, **attrs: Any):
         """
-        Define a variable in the HEMCO file.
+        Define a variable using HEMCO expectations.
 
         Parameters
         ----------
         vk : str
-            Variable name.
+            Name of the output variable.
         dims : tuple of str, optional
-            Dimensions.
+            Named dimensions of the output variable.
         **attrs : Any
             Variable attributes.
         """
@@ -1224,16 +1244,16 @@ class hemcofile:
         **attrs: Any,
     ):
         """
-        Add data to a variable.
+        Add data to a variable, defining it if necessary.
 
         Parameters
         ----------
         key : str
-            Variable name.
+            Name of the variable.
         vals : np.ndarray
-            Data to add.
+            Values to add.
         dims : tuple of str, optional
-            Dimensions.
+            Named dimensions.
         **attrs : Any
             Variable attributes.
         """
@@ -1246,7 +1266,7 @@ class hemcofile:
         vv[:nt] = vals
 
     def close(self):
-        """Close the file."""
+        """Close the NetCDF file."""
         if hasattr(self, "nc") and self.nc:
             self.nc.close()
 
@@ -1256,16 +1276,16 @@ class hemcofile:
 
 def to_ioapi(ef: xr.Dataset, path: str, **wopts: Any):
     """
-    Write Dataset to IOAPI NetCDF.
+    Write Dataset to a NetCDF file following IOAPI conventions.
 
     Parameters
     ----------
     ef : xarray.Dataset
-        Emission dataset.
+        Emission dataset with time dimension to allow constructing TFLAG.
     path : str
         Output file path.
     **wopts : Any
-        Options for to_netcdf.
+        Write options for xarray.to_netcdf.
     """
     wopts.setdefault("mode", "ws")
     wopts.setdefault("format", "NETCDF4_CLASSIC")
@@ -1304,18 +1324,18 @@ def symlinks(
     Parameters
     ----------
     tmpl : str
-        Path template.
+        strftime template for paths.
     dates : pd.Series or str
-        Source/destination dates.
+        Source and destination dates mapping.
     datetype : str, optional
-        Date type for string input.
+        Key for selecting the date column from a CSV file.
     verbose : int, default 0
         Verbosity level.
 
     Returns
     -------
     links : list of str
-        List of created symlinks.
+        List of created symlink paths.
     """
     import os
 
@@ -1342,17 +1362,17 @@ def symlinks(
 
 def gd_file(ef: xr.Dataset) -> xr.Dataset:
     """
-    Add lat/lon to a gridded CMAQ dataset.
+    Add lon/lat coordinates and rename dimensions for gridded CMAQ datasets.
 
     Parameters
     ----------
     ef : xarray.Dataset
-        Input gridded dataset.
+        Input dataset with 'crs' attribute and ROW/COL dimensions.
 
     Returns
     -------
     ef : xarray.Dataset
-        Dataset with lat/lon and time.
+        Modified dataset with 'lon', 'lat', and 'time' meta-variables.
     """
     import pyproj
 
