@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
+from joblib import Parallel, delayed
 from cmaq2hemco.mp2022 import open_gdemis, open_ptemis
 from cmaq2hemco.utils import pt2hemco, gd2hemco
 from cmaq2hemco.mechrc.cb6r5_ae7_aq import writeconfig
@@ -54,7 +55,6 @@ if debug:
     print(pkeys)
     print(gkeys)
 
-from joblib import Parallel, delayed
 
 def process_gkey(date, gkey, elat, elon):
     outpath = f"epa2022v1/{gkey}/{gkey}_{date:%Y-%m-%d}_epa2022v1_hc_22m.nc"
@@ -70,8 +70,11 @@ def process_gkey(date, gkey, elat, elon):
         return
     # using xregrid conservative regridding
     # All gkeys share the same grid, so weights.nc can be reused.
-    rgf = gd2hemco(outpath, gf, elat, elon, method="conservative", weights_file="weights.nc")
+    rgf = gd2hemco(
+        outpath, gf, elat, elon, method="conservative", weights_file="weights.nc"
+    )
     del rgf, gf
+
 
 def process_pkey(date, pkey, elat, elon):
     outpath = f"epa2022v1/{pkey}/{pkey}_{date:%Y-%m-%d}_epa2022v1_hc_22m.nc"
@@ -88,28 +91,29 @@ def process_pkey(date, pkey, elat, elon):
     rpf = pt2hemco(outpath, pf, elat, elon)  # apply plume rise
     del rpf, pf
 
-# Pre-generate weights.nc to avoid race conditions in parallel
-if gkeys:
-    first_date = dates[0]
-    first_gkey = gkeys[0]
-    print(f"Pre-generating weights using {first_gkey} on {first_date}")
-    process_gkey(first_date, first_gkey, elat, elon)
 
-# Use Parallel to speed up processing
-Parallel(n_jobs=-1)(
-    delayed(process_gkey)(date, gkey, elat, elon)
-    for date in dates
-    for gkey in gkeys
-)
+if __name__ == "__main__":
+    # Pre-generate weights.nc to avoid race conditions in parallel
+    if gkeys:
+        first_date = dates[0]
+        first_gkey = gkeys[0]
+        print(f"Pre-generating weights using {first_gkey} on {first_date}")
+        process_gkey(first_date, first_gkey, elat, elon)
 
-Parallel(n_jobs=-1)(
-    delayed(process_pkey)(date, pkey, elat, elon)
-    for date in dates
-    for pkey in pkeys
-)
+    # Use Parallel to speed up processing
+    Parallel(n_jobs=-1)(
+        delayed(process_gkey)(date, gkey, elat, elon)
+        for date in dates
+        for gkey in gkeys
+    )
 
+    Parallel(n_jobs=-1)(
+        delayed(process_pkey)(date, pkey, elat, elon)
+        for date in dates
+        for pkey in pkeys
+    )
 
-for sector in gkeys + pkeys:
-    hcpath = f"epa2022v1/{sector}/HEMCO_{sector}.rc"
-    secttmpl = f"epa2022v1/{sector}/{sector}_%Y-%m-%d_epa2022v1_hc_22m.nc"
-    writeconfig(hcpath, 2022, sector, secttmpl)
+    for sector in gkeys + pkeys:
+        hcpath = f"epa2022v1/{sector}/HEMCO_{sector}.rc"
+        secttmpl = f"epa2022v1/{sector}/{sector}_%Y-%m-%d_epa2022v1_hc_22m.nc"
+        writeconfig(hcpath, 2022, sector, secttmpl)
