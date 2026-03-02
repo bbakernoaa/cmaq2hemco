@@ -6,8 +6,8 @@ from cmaq2hemco.mp2022 import open_gdemis, open_ptemis
 from cmaq2hemco.utils import pt2hemco, gd2hemco
 from cmaq2hemco.mechrc.cb6r5_ae7_aq import writeconfig
 
-debug = True
-dates = pd.date_range("2022-01-01", "2022-12-31", freq="d")
+debug = False
+dates = pd.date_range("2022-01-01", "2022-12-31", freq="D")
 # Define grid by edges
 elat = np.linspace(15, 65, 501)
 elon = np.linspace(-135, -50, 851)
@@ -46,14 +46,7 @@ cmv_c3_12
 pt_oilgas
 ptnonipm""".split()
 
-if debug:
-    dates = pd.to_datetime(["2022-07-12"])
-    # pkeys = pkeys[:1]
-    # gkeys = gkeys[:1]
-    print("**WARNING: in debug mode; only processing")
-    print(dates)
-    print(pkeys)
-    print(gkeys)
+
 
 
 def process_gkey(date, gkey, elat, elon):
@@ -100,20 +93,23 @@ if __name__ == "__main__":
         print(f"Pre-generating weights using {first_gkey} on {first_date}")
         process_gkey(first_date, first_gkey, elat, elon)
 
-    # Use Parallel to speed up processing
-    Parallel(n_jobs=-1)(
+
+    # Use Parallel to speed up processing (tune n_jobs as needed)
+    Parallel(n_jobs=3)(
         delayed(process_gkey)(date, gkey, elat, elon)
         for date in dates
         for gkey in gkeys
     )
 
-    Parallel(n_jobs=-1)(
-        delayed(process_pkey)(date, pkey, elat, elon)
-        for date in dates
-        for pkey in pkeys
-    )
+    # Parallel(n_jobs=3)(
+    #     delayed(process_pkey)(date, pkey, elat, elon)
+    #     for date in dates
+    #     for pkey in pkeys
+    # )
 
     for sector in gkeys + pkeys:
         hcpath = f"epa2022v1/{sector}/HEMCO_{sector}.rc"
         secttmpl = f"epa2022v1/{sector}/{sector}_%Y-%m-%d_epa2022v1_hc_22m.nc"
-        writeconfig(hcpath, 2022, sector, secttmpl)
+        # Only write config if the directory exists (implying some files were processed)
+        if os.path.exists(os.path.dirname(hcpath)):
+            writeconfig(hcpath, 2022, sector, secttmpl)

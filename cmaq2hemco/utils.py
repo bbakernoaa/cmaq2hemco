@@ -264,10 +264,10 @@ def getmw(key: str, gc: str = "cb6r5_ae7_aq", nr: str = "cb6r5hap_ae7_aq") -> fl
     import requests
 
     cache_key = (gc, nr)
+    mwpath = f"cmaq_{gc}_molwt.csv"
     if cache_key in _mw_cache:
         mwdf = _mw_cache[cache_key]
     else:
-        mwpath = f"cmaq_{gc}_molwt.csv"
         fillin = {
             "CH4": 16.0,  # from ECH4
             "ETHYLBENZ": 106.2,  # from XYLMN
@@ -277,27 +277,29 @@ def getmw(key: str, gc: str = "cb6r5_ae7_aq", nr: str = "cb6r5hap_ae7_aq") -> fl
         if not os.path.exists(mwpath):
             mwdfs = []
             for prfx, mech in [("GC", gc), ("NR", nr)]:
+                
                 url = (
-                    "https://raw.githubusercontent.com/USEPA/CMAQ/refs/heads/main/"
+                    "https://github.com/USEPA/CMAQ/blob/9bd3734176479c2e49139fea98e1d5e8a16170e3/"
                     f"CCTM/src/MECHS/{mech}/{prfx}_{mech}.nml"
                 )
-            r = requests.get(url, timeout=10)
-            txtlines = r.text.split("\n")
-            datlines = [
-                _l for _l in txtlines if _l.startswith("'") or _l.startswith("!")
-            ]
-            datlines[0] = datlines[0].replace("!", "") + ","
-            dat = "\n".join(datlines).replace("'", "")
-            dat = re.sub("[ ]+,", ",", dat)
-            rmwdf = pd.read_csv(io.StringIO(dat), index_col=False)
-            rmwdf.columns = [k for k in rmwdf.columns]
-            mwdfs.append(rmwdf.set_index("SPECIES"))
-        mwdf = pd.concat(mwdfs)
-        for newk, mw in fillin.items():
-            if newk not in mwdf.index:
-                mwdf.loc[newk, "MOLWT"] = mw
+                r = requests.get(url, timeout=10)
+                txtlines = r.text.split("\n")
+                datlines = [
+                    _l for _l in txtlines if _l.startswith("'") or _l.startswith("!")
+                ]
+                datlines[0] = datlines[0].replace("!", "") + ","
+                dat = "\n".join(datlines).replace("'", "")
+                dat = re.sub("[ ]+,", ",", dat)
+                rmwdf = pd.read_csv(io.StringIO(dat), index_col=False)
+                rmwdf.columns = [k for k in rmwdf.columns]
+                mwdfs.append(rmwdf.set_index("SPECIES"))
+            mwdf = pd.concat(mwdfs)
+            for newk, mw in fillin.items():
+                if newk not in mwdf.index:
+                    mwdf.loc[newk, "MOLWT"] = mw
             mwdf[["MOLWT"]].to_csv(mwpath, index=True)
-        mwdf = pd.read_csv(mwpath, index_col=0)
+        else:
+            mwdf = pd.read_csv(mwpath, index_col=0)
         _mw_cache[cache_key] = mwdf
 
     try:
