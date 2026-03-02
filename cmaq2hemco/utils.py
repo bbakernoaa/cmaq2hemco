@@ -227,6 +227,8 @@ _timeattrs = dict(
     axis="T",
 )
 
+_mw_cache = {}
+
 
 def getmw(key: str, gc: str = "cb6r5_ae7_aq", nr: str = "cb6r5hap_ae7_aq") -> float:
     """
@@ -261,20 +263,24 @@ def getmw(key: str, gc: str = "cb6r5_ae7_aq", nr: str = "cb6r5hap_ae7_aq") -> fl
     import pandas as pd
     import requests
 
-    mwpath = f"cmaq_{gc}_molwt.csv"
-    fillin = {
-        "CH4": 16.0,  # from ECH4
-        "ETHYLBENZ": 106.2,  # from XYLMN
-        "BENZ": 78.1,  # from BENZENE
-        "NH3": 17.0,  # from NR_{mech}.nml
-    }
-    if not os.path.exists(mwpath):
-        mwdfs = []
-        for prfx, mech in [("GC", gc), ("NR", nr)]:
-            url = (
-                "https://raw.githubusercontent.com/USEPA/CMAQ/refs/heads/main/"
-                f"CCTM/src/MECHS/{mech}/{prfx}_{mech}.nml"
-            )
+    cache_key = (gc, nr)
+    if cache_key in _mw_cache:
+        mwdf = _mw_cache[cache_key]
+    else:
+        mwpath = f"cmaq_{gc}_molwt.csv"
+        fillin = {
+            "CH4": 16.0,  # from ECH4
+            "ETHYLBENZ": 106.2,  # from XYLMN
+            "BENZ": 78.1,  # from BENZENE
+            "NH3": 17.0,  # from NR_{mech}.nml
+        }
+        if not os.path.exists(mwpath):
+            mwdfs = []
+            for prfx, mech in [("GC", gc), ("NR", nr)]:
+                url = (
+                    "https://raw.githubusercontent.com/USEPA/CMAQ/refs/heads/main/"
+                    f"CCTM/src/MECHS/{mech}/{prfx}_{mech}.nml"
+                )
             r = requests.get(url, timeout=10)
             txtlines = r.text.split("\n")
             datlines = [
@@ -290,8 +296,10 @@ def getmw(key: str, gc: str = "cb6r5_ae7_aq", nr: str = "cb6r5hap_ae7_aq") -> fl
         for newk, mw in fillin.items():
             if newk not in mwdf.index:
                 mwdf.loc[newk, "MOLWT"] = mw
-        mwdf[["MOLWT"]].to_csv(mwpath, index=True)
-    mwdf = pd.read_csv(mwpath, index_col=0)
+            mwdf[["MOLWT"]].to_csv(mwpath, index=True)
+        mwdf = pd.read_csv(mwpath, index_col=0)
+        _mw_cache[cache_key] = mwdf
+
     try:
         mw = mwdf.loc[key, "MOLWT"] / 1e3
     except KeyError:
@@ -611,16 +619,27 @@ def pt2hemco(
     area = hemco_area(elat, elon)
     outf.addvar("AREA", area, units="m2", dims=("lat", "lon"))
 
+    # Pre-calculate flat indices for fast aggregation
+    # idx_t: (nt, 1) -> (nt, ns)
+    # idx_k, idx_r, idx_c: (1, ns) -> (nt, ns)
+    idx_t = pf.ti.values[:, None].astype(np.int64) * (nk * nr * nc)
+    idx_k = pf.ki.values[None, :].astype(np.int64) * (nr * nc)
+    idx_r = pf.ri.values[None, :].astype(np.int64) * nc
+    idx_c = pf.ci.values[None, :].astype(np.int64)
+    full_idx = (idx_t + idx_k + idx_r + idx_c).ravel()
+
     for dk in datakeys:
         if verbose > 0:
             print(f"Processing {dk}")
-        df = pf[["ti", "ki", "ri", "ci", dk]].to_dataframe()
-        df = df.loc[df[dk] != 0]
-        if df.empty:
+
+        dk_values = pf[dk].values.ravel()
+        # Use bincount for fast aggregation
+        tmp_flat = np.bincount(full_idx, weights=dk_values, minlength=nt * nk * nr * nc)
+        tmp = tmp_flat.reshape(nt, nk, nr, nc).astype("f")
+
+        if (tmp == 0).all():
             continue
-        vals = df.groupby(["ti", "ki", "ri", "ci"], as_index=False).sum()
-        tmp = np.zeros((nt, nk, nr, nc), dtype="f")
-        tmp[vals.ti, vals.ki, vals.ri, vals.ci] = vals[dk].values
+
         attrs = {k: v for k, v in pf[dk].attrs.items()}
         unit = attrs.get("units", "unknown").strip()
         tmp, unit = unitconvert(dk, tmp, unit, area=area)
@@ -1199,15 +1218,21 @@ def pt2gd(
     pf["ri"] = ("stack",), ris
     pf["ci"] = ("stack",), cis
 
+    # Pre-calculate flat indices for fast aggregation
+    idx_t = pf.ti.values[:, None].astype(np.int64) * (nz * nr * nc)
+    idx_k = pf.ki.values[None, :].astype(np.int64) * (nr * nc)
+    idx_r = pf.ri.values[None, :].astype(np.int64) * nc
+    idx_c = pf.ci.values[None, :].astype(np.int64)
+    full_idx = (idx_t + idx_k + idx_r + idx_c).ravel()
+
     for dk in datakeys:
         if len(pf[dk].dims) == 1:
             continue
-        tmp = np.zeros((nt, nz, nr, nc), dtype="f")
-        df = pf[["ti", "ki", "ri", "ci", dk]].to_dataframe()
-        df = df.loc[df[dk] != 0].dropna()
-        if not df.empty:
-            vals = df.groupby(["ti", "ki", "ri", "ci"], as_index=False).sum()
-            tmp[vals.ti, vals.ki, vals.ri, vals.ci] = vals[dk].values
+
+        dk_values = pf[dk].values.ravel()
+        # Use bincount for fast aggregation
+        tmp_flat = np.bincount(full_idx, weights=dk_values, minlength=nt * nz * nr * nc)
+        tmp = tmp_flat.reshape(nt, nz, nr, nc).astype("f")
 
         outf[dk] = (("TSTEP", "LAY", "ROW", "COL"), tmp, pf[dk].attrs)
 
