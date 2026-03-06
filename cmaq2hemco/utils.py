@@ -219,11 +219,10 @@ _lonattrs = dict(
     axis="X",
     standard_name="longitude",
 )
-_reftime = "1970-01-01 00:00:00"
 _timeattrs = dict(
     long_name="time",
-    units=f"hours since {_reftime}",
-    calendar="gregorian",
+    units="hours since {reftime}",
+    calendar="standard",
     axis="T",
     standard_name="time",
 )
@@ -1389,11 +1388,13 @@ class hemcofile:
         self.nc.createDimension("lon", lon.size)
 
         tv = self.nc.createVariable("time", "d", ("time",))
+        time_dt = pd.to_datetime(time)
+        reftime = time_dt[0].strftime("%Y-%m-%d %H:%M:%S")
         for k, v in _timeattrs.items():
+            if k == "units":
+                v = v.format(reftime=reftime)
             tv.setncattr(k, v)
-        timec = (
-            (pd.to_datetime(time) - pd.to_datetime(_reftime)).total_seconds() / 3600.0
-        ).astype("d")
+        timec = ((time_dt - time_dt[0]).total_seconds() / 3600.0).astype("d")
         tv[: timec.size] = timec
 
         if lev is not None:
