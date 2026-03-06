@@ -1040,7 +1040,7 @@ def unitconvert(
     inplace: bool = True,
 ) -> Tuple[Union[np.ndarray, xr.DataArray], str]:
     """
-    Perform unit conversion to kg/m**2/s.
+    Perform unit conversion to kg m-2 s-1.
 
     Parameters
     ----------
@@ -1058,9 +1058,9 @@ def unitconvert(
     Returns
     -------
     outval : np.ndarray or xr.DataArray
-        Converted values in kg/m**2/s.
+        Converted values in kg m-2 s-1.
     outunit : str
-        Final unit string ('kg/m**2/s').
+        Final unit string ('kg m-2 s-1').
 
     Raises
     ------
@@ -1092,11 +1092,11 @@ def unitconvert(
 
     if "m**2" not in unit and area is not None:
         factor /= area
-        outunit_parts.append("/m**2")
+        outunit_parts.append(" m-2")
     elif "/m**2" in unit:
-        outunit_parts.append("/m**2")
-    outunit_parts.append("/s")
-    outunit = "".join(outunit_parts).replace("/s/m", "/m**2/s")
+        outunit_parts.append(" m-2")
+    outunit_parts.append(" s-1")
+    outunit = "".join(outunit_parts).strip()
 
     if inplace:
         val *= factor
