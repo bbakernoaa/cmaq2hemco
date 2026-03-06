@@ -211,20 +211,21 @@ _latattrs = dict(
     long_name="Latitude",
     units="degrees_north",
     axis="Y",
-    bounds="lat_bnds",
+    standard_name="latitude",
 )
 _lonattrs = dict(
     long_name="Longitude",
     units="degrees_east",
     axis="X",
-    bounds="lon_bnds",
+    standard_name="longitude",
 )
 _reftime = "1970-01-01 00:00:00"
 _timeattrs = dict(
-    long_name="Time",
+    long_name="time",
     units=f"hours since {_reftime}",
     calendar="gregorian",
     axis="T",
+    standard_name="time",
 )
 
 _mw_cache = {}
@@ -619,7 +620,9 @@ def pt2hemco(
         path, pf.time, clat, clon, lev=clev, varkeys=datakeys, attrs=pf.attrs
     )
     area = hemco_area(elat, elon)
-    outf.addvar("AREA", area, units="m2", dims=("lat", "lon"))
+    outf.addvar(
+        "AREA", area, units="m**2", long_name="Grid cell area", dims=("lat", "lon")
+    )
 
     # Pre-calculate flat indices for fast aggregation
     # idx_t: (nt, 1) -> (nt, ns)
@@ -803,7 +806,9 @@ def gd2hemco(
         path, rgf.time, clat, clon, lev=clev, varkeys=datakeys, attrs=rgf.attrs
     )
     area = hemco_area(elat, elon)
-    outf.addvar("AREA", area, units="m2", dims=("lat", "lon"))
+    outf.addvar(
+        "AREA", area, units="m**2", long_name="Grid cell area", dims=("lat", "lon")
+    )
 
     for dk in datakeys:
         if verbose > 0:
@@ -1036,7 +1041,7 @@ def unitconvert(
     inplace: bool = True,
 ) -> Tuple[Union[np.ndarray, xr.DataArray], str]:
     """
-    Perform unit conversion to kg/m2/s.
+    Perform unit conversion to kg/m**2/s.
 
     Parameters
     ----------
@@ -1045,18 +1050,18 @@ def unitconvert(
     val : np.ndarray or xr.DataArray
         Values in input units to be converted.
     unit : str
-        Input unit string (e.g., 'moles/s', 'g/s/m2').
+        Input unit string (e.g., 'moles/s', 'g/s/m**2').
     area : np.ndarray or xr.DataArray, optional
-        Area for each pixel (m2) if input is not per unit area.
+        Area for each pixel (m**2) if input is not per unit area.
     inplace : bool, default True
         If True, do the conversion in-place.
 
     Returns
     -------
     outval : np.ndarray or xr.DataArray
-        Converted values in kg/m2/s.
+        Converted values in kg/m**2/s.
     outunit : str
-        Final unit string ('kg/m2/s').
+        Final unit string ('kg/m**2/s').
 
     Raises
     ------
@@ -1092,7 +1097,7 @@ def unitconvert(
     elif "/m**2" in unit:
         outunit_parts.append("/m**2")
     outunit_parts.append("/s")
-    outunit = "".join(outunit_parts).replace("/s/m", "/m2/s")
+    outunit = "".join(outunit_parts).replace("/s/m", "/m**2/s")
 
     if inplace:
         val *= factor
@@ -1236,7 +1241,12 @@ def pt2gd(
         tmp_flat = np.bincount(full_idx, weights=dk_values, minlength=nt * nz * nr * nc)
         tmp = tmp_flat.reshape(nt, nz, nr, nc).astype("f")
 
-        outf[dk] = (("TSTEP", "LAY", "ROW", "COL"), tmp, pf[dk].attrs)
+        attrs = pf[dk].attrs.copy()
+        if "long_name" not in attrs:
+            attrs["long_name"] = dk
+        if "units" not in attrs:
+            attrs["units"] = "unknown"
+        outf[dk] = (("TSTEP", "LAY", "ROW", "COL"), tmp, attrs)
 
     return outf
 
@@ -1367,8 +1377,11 @@ class hemcofile:
         import netCDF4
 
         self.nc = netCDF4.Dataset(path, mode="ws", format="NETCDF4_CLASSIC")
+        self.nc.setncattr("Conventions", "COARDS")
         if attrs:
             for pk, pv in attrs.items():
+                if pk == "history" and hasattr(self.nc, "history"):
+                    pv = getattr(self.nc, "history") + "\n" + pv
                 self.nc.setncattr(pk, pv)
         self.nc.createDimension("time", None)
         if lev is not None:
@@ -1428,10 +1441,17 @@ class hemcofile:
             )
         chunks = [chunkdefsizes[dk] for dk in dims]
         vv = self.nc.createVariable(
-            vk, "f", dims, chunksizes=chunks, zlib=True, complevel=1
+            vk,
+            "f",
+            dims,
+            chunksizes=chunks,
+            zlib=True,
+            complevel=1,
+            fill_value=np.float32(1e15),
         )
-        vv.setncattr("standard_name", vk)
+        vv.setncattr("long_name", vk)
         vv.setncattr("units", "unknown")
+        vv.setncattr("missing_value", np.float32(1e15))
         for pk, pv in attrs.items():
             vv.setncattr(pk, pv)
 
@@ -1459,6 +1479,11 @@ class hemcofile:
         if key not in self.nc.variables:
             self.defvar(key, dims=dims, **attrs)
         vv = self.nc.variables[key]
+
+        # Ensure long_name is present if not already set or passed in
+        if "long_name" not in attrs and not hasattr(vv, "long_name"):
+            vv.setncattr("long_name", key)
+
         for pk, pv in attrs.items():
             vv.setncattr(pk, pv)
         nt = vals.shape[0]
