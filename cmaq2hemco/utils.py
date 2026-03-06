@@ -200,7 +200,7 @@ _deflevs = np.array(
 
 
 _levattrs = dict(
-    long_name="hybrid level at midpoints ((A/P0)+B)",
+    long_name="level",
     units="level",
     axis="Z",
     positive="up",
@@ -278,7 +278,6 @@ def getmw(key: str, gc: str = "cb6r5_ae7_aq", nr: str = "cb6r5hap_ae7_aq") -> fl
         if not os.path.exists(mwpath):
             mwdfs = []
             for prfx, mech in [("GC", gc), ("NR", nr)]:
-                
                 url = (
                     "https://github.com/USEPA/CMAQ/blob/9bd3734176479c2e49139fea98e1d5e8a16170e3/"
                     f"CCTM/src/MECHS/{mech}/{prfx}_{mech}.nml"
@@ -1649,12 +1648,22 @@ def gd_file(ef: xr.Dataset) -> xr.Dataset:
         ef["lon"] = (
             ("ROW", "COL"),
             LON,
-            dict(units="degrees_east", long_name="longitude"),
+            dict(
+                units="degrees_east",
+                long_name="Longitude",
+                standard_name="longitude",
+                axis="X",
+            ),
         )
         ef["lat"] = (
             ("ROW", "COL"),
             LAT,
-            dict(units="degrees_north", long_name="latitude"),
+            dict(
+                units="degrees_north",
+                long_name="Latitude",
+                standard_name="latitude",
+                axis="Y",
+            ),
         )
 
     if "LAY" in ef.dims:

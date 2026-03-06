@@ -47,8 +47,6 @@ pt_oilgas
 ptnonipm""".split()
 
 
-
-
 def process_gkey(date, gkey, elat, elon):
     outpath = f"epa2022v1/{gkey}/{gkey}_{date:%Y-%m-%d}_epa2022v1_hc_22m.nc"
     if os.path.exists(outpath):
@@ -92,7 +90,6 @@ if __name__ == "__main__":
         first_gkey = gkeys[0]
         print(f"Pre-generating weights using {first_gkey} on {first_date}")
         process_gkey(first_date, first_gkey, elat, elon)
-
 
     # Use Parallel to speed up processing (tune n_jobs as needed)
     Parallel(n_jobs=3)(
