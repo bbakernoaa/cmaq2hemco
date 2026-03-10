@@ -447,55 +447,103 @@ def find_s3_file(
     import boto3
     from botocore import UNSIGNED
     from botocore.client import Config
+    import numpy as np
 
     client = boto3.client("s3", config=Config(signature_version=UNSIGNED))
     date_dt = pd.to_datetime(date)
     date_str = date_dt.strftime("%Y%m%d")
 
-    # The EPA bucket often follows a versioning like 2022hc, 2022hd, 2022he
-    # We iterate over common prefixes to find the version folders (e.g. 2022he_cb6_22m)
+    # Gather all candidate files for this search_pattern across all version folders
     paginator = client.get_paginator("list_objects_v2")
-    
-    potential_keys = []
-    
+    all_keys = []
     for page in paginator.paginate(Bucket=bucket, Prefix=root, Delimiter="/"):
         for cp in page.get("CommonPrefixes", []):
-            version_folder = cp["Prefix"]  # e.g., emis/2022v2/2022he_cb6_22m/
-            # For each version folder, look for the data under 12US1/cmaq_cb6ae7/
+            version_folder = cp["Prefix"]
             prefix_to_search = f"{version_folder}12US1/cmaq_cb6ae7/{search_pattern}"
-
             inner_paginator = client.get_paginator("list_objects_v2")
-            for inner_page in inner_paginator.paginate(
-                Bucket=bucket, Prefix=prefix_to_search
-            ):
+            for inner_page in inner_paginator.paginate(Bucket=bucket, Prefix=prefix_to_search):
                 for obj in inner_page.get("Contents", []):
                     key = obj["Key"]
-                    # Strict match first
-                    if f"_{date_str}_" in key:
-                        return key
-                    
-                    if fuzzy:
-                        # Find all keys that have a YYYYMMDD date in them
-                        # Assumes naming like emis_mole_rail_20220104_...
-                        match = re.search(r"_(\d{8})_", key)
-                        if match:
-                            potential_keys.append(key)
-    
-    if fuzzy and potential_keys:
-        # Sort keys based on how close they are to the requested date
-        # Note: if multiple dates exist, this picks the one closest in time
-        import numpy as np
-        
-        def _get_date_diff(k):
-            match = re.search(r"_(\d{8})_", k)
-            if not match: return np.inf
-            k_dt = pd.to_datetime(match.group(1))
-            return abs((k_dt - date_dt).total_seconds())
-            
-        potential_keys.sort(key=_get_date_diff)
-        return potential_keys[0]
+                    all_keys.append(key)
 
-    return None
+    # Extract all dates from filenames
+    date_key_map = {}
+    for key in all_keys:
+        match = re.search(r"_(\d{8})_", key)
+        if match:
+            dstr = match.group(1)
+            date_key_map[dstr] = key
+
+    if not date_key_map:
+        # fallback to old fuzzy logic if no dates found
+        if fuzzy and all_keys:
+            # fallback: just pick the first file
+            return all_keys[0]
+        return None
+
+    # Analyze the distribution of dates
+    all_dates = sorted(date_key_map.keys())
+    all_date_objs = [pd.to_datetime(d, format="%Y%m%d") for d in all_dates]
+
+    # Group by month
+    months = {}
+    for d, k in zip(all_date_objs, all_dates):
+        m = (d.year, d.month)
+        months.setdefault(m, []).append((d, k))
+
+    # Heuristic: if every month has 1 file, treat as monthly
+    if all(len(v) == 1 for v in months.values()):
+        # Monthly pattern
+        m = (date_dt.year, date_dt.month)
+        if m in months:
+            # Use the file for this month
+            return date_key_map[months[m][0][1]]
+        # fallback: closest month
+        closest = min(months.keys(), key=lambda x: abs((pd.Timestamp(x[0], x[1], 1) - date_dt.replace(day=1)).days))
+        return date_key_map[months[closest][0][1]]
+
+    # Heuristic: if there are 4 files per month, likely 4 representative days (e.g., weekday/weekend/season)
+    if all(len(v) == 4 for v in months.values()):
+        # 4day pattern: pick the file whose day-of-week best matches the requested date
+        m = (date_dt.year, date_dt.month)
+        if m in months:
+            # Map day of week to closest available file
+            target_dow = date_dt.dayofweek
+            # Get all days for this month
+            days = [d for d, k in months[m]]
+            # Find the file with the closest day-of-week
+            best = min(days, key=lambda d: abs(d.dayofweek - target_dow))
+            best_str = best.strftime("%Y%m%d")
+            return date_key_map[best_str]
+        # fallback: closest month
+        closest = min(months.keys(), key=lambda x: abs((pd.Timestamp(x[0], x[1], 1) - date_dt.replace(day=1)).days))
+        days = [d for d, k in months[closest]]
+        best = min(days, key=lambda d: abs(d.dayofweek - date_dt.dayofweek))
+        best_str = best.strftime("%Y%m%d")
+        return date_key_map[best_str]
+
+    # Heuristic: if there are 7 files per week, treat as daily
+    # We'll check if there are at least 7 unique days in any 7-day window
+    all_days = sorted(set([d.date() for d in all_date_objs]))
+    is_daily = False
+    for i in range(len(all_days) - 6):
+        window = all_days[i:i+7]
+        if (window[-1] - window[0]).days == 6:
+            is_daily = True
+            break
+    if is_daily:
+        # Try to find exact match
+        if date_str in date_key_map:
+            return date_key_map[date_str]
+        # fallback: closest date
+        closest = min(all_date_objs, key=lambda d: abs((d - date_dt).days))
+        best_str = closest.strftime("%Y%m%d")
+        return date_key_map[best_str]
+
+    # Fallback: fuzzy/closest date
+    closest = min(all_date_objs, key=lambda d: abs((d - date_dt).days))
+    best_str = closest.strftime("%Y%m%d")
+    return date_key_map[best_str]
     return None
 
 
