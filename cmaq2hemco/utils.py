@@ -22,6 +22,7 @@ xr.set_options(keep_attrs=True)
 __all__ = [
     "plumerise_briggs",
     "open_date",
+    "find_s3_file",
     "gd2hemco",
     "pt2hemco",
     "pt2gd",
@@ -425,6 +426,79 @@ def parse_ioapi_time(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
+def find_s3_file(
+    date: Any,
+    bucket: str,
+    root: str,
+    search_pattern: str,
+    fuzzy: bool = False,
+) -> Optional[str]:
+    """
+    Search S3 for a file matching a pattern for a specific date.
+
+    Example
+    -------
+    root: "emis/2022v2/"
+    search_pattern: "premerged_area/rail/emis_mole_rail"
+    fuzzy: bool, default False
+        If True, find the nearest date available in the bucket instead of a strict match.
+    """
+    import re
+    import boto3
+    from botocore import UNSIGNED
+    from botocore.client import Config
+
+    client = boto3.client("s3", config=Config(signature_version=UNSIGNED))
+    date_dt = pd.to_datetime(date)
+    date_str = date_dt.strftime("%Y%m%d")
+
+    # The EPA bucket often follows a versioning like 2022hc, 2022hd, 2022he
+    # We iterate over common prefixes to find the version folders (e.g. 2022he_cb6_22m)
+    paginator = client.get_paginator("list_objects_v2")
+    
+    potential_keys = []
+    
+    for page in paginator.paginate(Bucket=bucket, Prefix=root, Delimiter="/"):
+        for cp in page.get("CommonPrefixes", []):
+            version_folder = cp["Prefix"]  # e.g., emis/2022v2/2022he_cb6_22m/
+            # For each version folder, look for the data under 12US1/cmaq_cb6ae7/
+            prefix_to_search = f"{version_folder}12US1/cmaq_cb6ae7/{search_pattern}"
+
+            inner_paginator = client.get_paginator("list_objects_v2")
+            for inner_page in inner_paginator.paginate(
+                Bucket=bucket, Prefix=prefix_to_search
+            ):
+                for obj in inner_page.get("Contents", []):
+                    key = obj["Key"]
+                    # Strict match first
+                    if f"_{date_str}_" in key:
+                        return key
+                    
+                    if fuzzy:
+                        # Find all keys that have a YYYYMMDD date in them
+                        # Assumes naming like emis_mole_rail_20220104_...
+                        match = re.search(r"_(\d{8})_", key)
+                        if match:
+                            potential_keys.append(key)
+    
+    if fuzzy and potential_keys:
+        # Sort keys based on how close they are to the requested date
+        # Note: if multiple dates exist, this picks the one closest in time
+        import numpy as np
+        
+        def _get_date_diff(k):
+            match = re.search(r"_(\d{8})_", k)
+            if not match: return np.inf
+            k_dt = pd.to_datetime(match.group(1))
+            return abs((k_dt - date_dt).total_seconds())
+            
+        potential_keys.sort(key=_get_date_diff)
+        return potential_keys[0]
+
+    return None
+    return None
+
+
 def open_date(date: Any, tmpl: str, bucket: str, cache: bool = True) -> xr.Dataset:
     """
     Open all files for specific date from AWS S3.
@@ -809,6 +883,12 @@ def gd2hemco(
     )
 
     for dk in datakeys:
+        # Check if the variable is all zeros (across all dimensions)
+        if (rgf[dk] == 0).all():
+            if verbose > 0:
+                print(f"Skipping {dk} (all zeros)")
+            continue
+
         if verbose > 0:
             print(f"Adding {dk}")
         attrs = {k: v for k, v in rgf[dk].attrs.items()}

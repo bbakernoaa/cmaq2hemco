@@ -1,3 +1,4 @@
+import argparse
 import pandas as pd
 import numpy as np
 import os
@@ -7,7 +8,6 @@ from cmaq2hemco.utils import pt2hemco, gd2hemco
 from cmaq2hemco.mechrc.cb6r5_ae7_aq import writeconfig
 
 debug = False
-dates = pd.date_range("2022-01-01", "2022-12-31", freq="D")
 # Define grid by edges
 elat = np.linspace(15, 65, 501)
 elon = np.linspace(-135, -50, 851)
@@ -84,6 +84,23 @@ def process_pkey(date, pkey, elat, elon):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Process EPA 2022 Emissions to HEMCO format.")
+    parser.add_argument("--start", type=str, help="Start date (YYYY-MM-DD)", default=None)
+    parser.add_argument("--end", type=str, help="End date (YYYY-MM-DD)", default=None)
+    parser.add_argument("--date", type=str, help="Single date to process (YYYY-MM-DD)", default=None)
+    
+    args = parser.parse_args()
+
+    if args.date:
+        dates = pd.date_range(args.date, args.date, freq="D")
+    elif args.start and args.end:
+        dates = pd.date_range(args.start, args.end, freq="D")
+    elif args.start:
+        dates = pd.date_range(args.start, args.start, freq="D")
+    else:
+        # Default to full year if no arguments provided
+        dates = pd.date_range("2022-01-01", "2022-12-31", freq="D")
+
     # Pre-generate weights.nc to avoid race conditions in parallel
     if gkeys:
         first_date = dates[0]
@@ -92,11 +109,9 @@ if __name__ == "__main__":
         process_gkey(first_date, first_gkey, elat, elon)
 
     # Use Parallel to speed up processing (tune n_jobs as needed)
-    Parallel(n_jobs=3)(
-        delayed(process_gkey)(date, gkey, elat, elon)
-        for date in dates
-        for gkey in gkeys
-    )
+    for date in dates: 
+        for gkey in gkeys:
+            process_gkey(date,gkey, elat, elon)
 
     # Parallel(n_jobs=3)(
     #     delayed(process_pkey)(date, pkey, elat, elon)
