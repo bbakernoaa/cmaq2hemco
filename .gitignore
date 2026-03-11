@@ -173,3 +173,8 @@ test_weights.nc
 # Visualization artifacts
 examples/*.png
 examples/*.html
+
+logs/
+
+epa-*/
+epa2022*/

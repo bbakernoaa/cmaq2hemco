@@ -17,6 +17,12 @@ if not logging.getLogger().hasHandlers():
         format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
 
+# List of holiday strings in MMDD format (e.g., New Years, Independence Day, etc.)
+HOLIDAYS = [
+    "0101", "0102", "0415", "0416", "0530", "0531", "0704", 
+    "0705", "0905", "0906", "1123", "1124", "1125", "1224", "1225", "1226"
+]
+
 # Optional dependencies
 try:
     import xregrid
@@ -537,6 +543,34 @@ def find_s3_file(
 
     # Heuristic: if there are 5 or more files per month (but not daily), or exactly a few per week
     # Handle patterns like 6 files/month (the example provided: Jan 1, 2, 3, 4, 8, 9)
+    if any(7 < len(v) < 28 for v in months.values()):
+        m = (date_dt.year, date_dt.month)
+        if m in months:
+            target_dow = date_dt.dayofweek
+            target_mmdd = date_dt.strftime("%m%d")
+            days = [d for d, k in months[m]]
+
+            # Check if requested date is a holiday
+            is_holiday = target_mmdd in HOLIDAYS
+            
+            # Helper to find representative files
+            rep_days = [d for d in days if d.strftime("%m%d") in HOLIDAYS] if is_holiday else [d for d in days if d.strftime("%m%d") not in HOLIDAYS]
+            
+            if not rep_days: # If no holiday-specific files, fallback to all days
+                rep_days = days
+
+            # Try to match the same day-of-week within the filtered days
+            same_dow = [d for d in rep_days if d.dayofweek == target_dow]
+            if same_dow:
+                best = min(same_dow, key=lambda d: abs(d.day - date_dt.day))
+            else:
+                best = min(rep_days, key=lambda d: abs(d.dayofweek - target_dow))
+            
+            best_str = best.strftime("%Y%m%d")
+            logger.info(f"Pattern: representative days ({len(days)} files/month, holiday={is_holiday}). Requested {date_dt.date()} (dow={target_dow}) -> using file {best.strftime('%Y-%m-%d')} (dow={best.dayofweek}) ({date_key_map[best_str]})")
+            return date_key_map[best_str]
+
+    # Heuristic: generic representative days (few files per month)
     if any(1 < len(v) < 20 for v in months.values()):
         m = (date_dt.year, date_dt.month)
         if m in months:
