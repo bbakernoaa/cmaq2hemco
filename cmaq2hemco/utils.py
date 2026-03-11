@@ -9,6 +9,20 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+# Set up default logging if not already configured
+import logging
+if not logging.getLogger().hasHandlers():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+
+# List of holiday strings in MMDD format (e.g., New Years, Independence Day, etc.)
+HOLIDAYS = [
+    "0101", "0102", "0415", "0416", "0530", "0531", "0704", 
+    "0705", "0905", "0906", "1123", "1124", "1125", "1224", "1225", "1226"
+]
+
 # Optional dependencies
 try:
     import xregrid
@@ -447,55 +461,157 @@ def find_s3_file(
     import boto3
     from botocore import UNSIGNED
     from botocore.client import Config
+    import numpy as np
 
+    import logging
     client = boto3.client("s3", config=Config(signature_version=UNSIGNED))
     date_dt = pd.to_datetime(date)
     date_str = date_dt.strftime("%Y%m%d")
+    logger = logging.getLogger("find_s3_file")
 
-    # The EPA bucket often follows a versioning like 2022hc, 2022hd, 2022he
-    # We iterate over common prefixes to find the version folders (e.g. 2022he_cb6_22m)
+    # Gather all candidate files for this search_pattern across all version folders
     paginator = client.get_paginator("list_objects_v2")
-    
-    potential_keys = []
-    
+    all_keys = []
     for page in paginator.paginate(Bucket=bucket, Prefix=root, Delimiter="/"):
         for cp in page.get("CommonPrefixes", []):
-            version_folder = cp["Prefix"]  # e.g., emis/2022v2/2022he_cb6_22m/
-            # For each version folder, look for the data under 12US1/cmaq_cb6ae7/
+            version_folder = cp["Prefix"]
             prefix_to_search = f"{version_folder}12US1/cmaq_cb6ae7/{search_pattern}"
-
             inner_paginator = client.get_paginator("list_objects_v2")
-            for inner_page in inner_paginator.paginate(
-                Bucket=bucket, Prefix=prefix_to_search
-            ):
+            for inner_page in inner_paginator.paginate(Bucket=bucket, Prefix=prefix_to_search):
                 for obj in inner_page.get("Contents", []):
                     key = obj["Key"]
-                    # Strict match first
-                    if f"_{date_str}_" in key:
-                        return key
-                    
-                    if fuzzy:
-                        # Find all keys that have a YYYYMMDD date in them
-                        # Assumes naming like emis_mole_rail_20220104_...
-                        match = re.search(r"_(\d{8})_", key)
-                        if match:
-                            potential_keys.append(key)
-    
-    if fuzzy and potential_keys:
-        # Sort keys based on how close they are to the requested date
-        # Note: if multiple dates exist, this picks the one closest in time
-        import numpy as np
-        
-        def _get_date_diff(k):
-            match = re.search(r"_(\d{8})_", k)
-            if not match: return np.inf
-            k_dt = pd.to_datetime(match.group(1))
-            return abs((k_dt - date_dt).total_seconds())
-            
-        potential_keys.sort(key=_get_date_diff)
-        return potential_keys[0]
+                    all_keys.append(key)
 
-    return None
+    # Extract all dates from filenames
+    date_key_map = {}
+    for key in all_keys:
+        match = re.search(r"_(\d{8})_", key)
+        if match:
+            dstr = match.group(1)
+            date_key_map[dstr] = key
+
+    if not date_key_map:
+        # fallback to old fuzzy logic if no dates found
+        if fuzzy and all_keys:
+            logger.info(f"No date patterns found in filenames, returning first available file: {all_keys[0]}")
+            return all_keys[0]
+        logger.warning("No date patterns found in filenames and no files available.")
+        return None
+
+    # Analyze the distribution of dates
+    all_dates = sorted(date_key_map.keys())
+    all_date_objs = [pd.to_datetime(d, format="%Y%m%d") for d in all_dates]
+
+    # Group by month
+    months = {}
+    for d, k in zip(all_date_objs, all_dates):
+        m = (d.year, d.month)
+        months.setdefault(m, []).append((d, k))
+
+    # Heuristic: if every month has 1 file, treat as monthly
+    if all(len(v) == 1 for v in months.values()):
+        # Monthly pattern
+        m = (date_dt.year, date_dt.month)
+        if m in months:
+            chosen_date = months[m][0][0]
+            logger.info(f"Pattern: monthly. Requested {date_dt.date()} -> using file for month {chosen_date.strftime('%Y-%m-%d')} ({months[m][0][1]})")
+            return date_key_map[months[m][0][1]]
+        # fallback: closest month
+        closest = min(months.keys(), key=lambda x: abs((pd.Timestamp(x[0], x[1], 1) - date_dt.replace(day=1)).days))
+        chosen_date = months[closest][0][0]
+        logger.info(f"Pattern: monthly. Requested {date_dt.date()} not found, using closest month {chosen_date.strftime('%Y-%m-%d')} ({months[closest][0][1]})")
+        return date_key_map[months[closest][0][1]]
+
+    # Heuristic: if there are 4 files per month, likely 4 representative days (e.g., weekday/weekend/season)
+    if all(len(v) == 4 for v in months.values()):
+        # 4day pattern: pick the file whose day-of-week best matches the requested date
+        m = (date_dt.year, date_dt.month)
+        if m in months:
+            target_dow = date_dt.dayofweek
+            days = [d for d, k in months[m]]
+            best = min(days, key=lambda d: abs(d.dayofweek - target_dow))
+            best_str = best.strftime("%Y%m%d")
+            logger.info(f"Pattern: 4day. Requested {date_dt.date()} (dow={target_dow}) -> using representative file {best.strftime('%Y-%m-%d')} (dow={best.dayofweek}) ({date_key_map[best_str]})")
+            return date_key_map[best_str]
+        # fallback: closest month
+        closest = min(months.keys(), key=lambda x: abs((pd.Timestamp(x[0], x[1], 1) - date_dt.replace(day=1)).days))
+        days = [d for d, k in months[closest]]
+        best = min(days, key=lambda d: abs(d.dayofweek - date_dt.dayofweek))
+        best_str = best.strftime("%Y%m%d")
+        logger.info(f"Pattern: 4day. Requested {date_dt.date()} not found, using closest month representative file {best.strftime('%Y-%m-%d')} (dow={best.dayofweek}) ({date_key_map[best_str]})")
+        return date_key_map[best_str]
+
+    # Heuristic: if there are 5 or more files per month (but not daily), or exactly a few per week
+    # Handle patterns like 6 files/month (the example provided: Jan 1, 2, 3, 4, 8, 9)
+    if any(7 < len(v) < 28 for v in months.values()):
+        m = (date_dt.year, date_dt.month)
+        if m in months:
+            target_dow = date_dt.dayofweek
+            target_mmdd = date_dt.strftime("%m%d")
+            days = [d for d, k in months[m]]
+
+            # Check if requested date is a holiday
+            is_holiday = target_mmdd in HOLIDAYS
+            
+            # Helper to find representative files
+            rep_days = [d for d in days if d.strftime("%m%d") in HOLIDAYS] if is_holiday else [d for d in days if d.strftime("%m%d") not in HOLIDAYS]
+            
+            if not rep_days: # If no holiday-specific files, fallback to all days
+                rep_days = days
+
+            # Try to match the same day-of-week within the filtered days
+            same_dow = [d for d in rep_days if d.dayofweek == target_dow]
+            if same_dow:
+                best = min(same_dow, key=lambda d: abs(d.day - date_dt.day))
+            else:
+                best = min(rep_days, key=lambda d: abs(d.dayofweek - target_dow))
+            
+            best_str = best.strftime("%Y%m%d")
+            logger.info(f"Pattern: representative days ({len(days)} files/month, holiday={is_holiday}). Requested {date_dt.date()} (dow={target_dow}) -> using file {best.strftime('%Y-%m-%d')} (dow={best.dayofweek}) ({date_key_map[best_str]})")
+            return date_key_map[best_str]
+
+    # Heuristic: generic representative days (few files per month)
+    if any(1 < len(v) < 20 for v in months.values()):
+        m = (date_dt.year, date_dt.month)
+        if m in months:
+            target_dow = date_dt.dayofweek
+            days = [d for d, k in months[m]]
+            # Try to match the same day-of-week within the month
+            same_dow = [d for d in days if d.dayofweek == target_dow]
+            if same_dow:
+                # If multiple, find the one closest in day-of-month (e.g., same week)
+                best = min(same_dow, key=lambda d: abs(d.day - date_dt.day))
+            else:
+                # fallback: just pick the closest day-of-week available in that month
+                best = min(days, key=lambda d: abs(d.dayofweek - target_dow))
+            
+            best_str = best.strftime("%Y%m%d")
+            logger.info(f"Pattern: representative days ({len(days)} files/month). Requested {date_dt.date()} (dow={target_dow}) -> using file {best.strftime('%Y-%m-%d')} (dow={best.dayofweek}) ({date_key_map[best_str]})")
+            return date_key_map[best_str]
+
+    # Heuristic: if there are 7 files per week, treat as daily
+    # We'll check if there are at least 7 unique days in any 7-day window
+    all_days = sorted(set([d.date() for d in all_date_objs]))
+    is_daily = False
+    for i in range(len(all_days) - 6):
+        window = all_days[i:i+7]
+        if (window[-1] - window[0]).days == 6:
+            is_daily = True
+            break
+    if is_daily:
+        if date_str in date_key_map:
+            logger.info(f"Pattern: daily. Requested {date_dt.date()} -> using exact file {date_str} ({date_key_map[date_str]})")
+            return date_key_map[date_str]
+        closest = min(all_date_objs, key=lambda d: abs((d - date_dt).days))
+        best_str = closest.strftime("%Y%m%d")
+        logger.info(f"Pattern: daily. Requested {date_dt.date()} not found, using closest date {best_str} ({date_key_map[best_str]})")
+        return date_key_map[best_str]
+
+    # Fallback: fuzzy/closest date
+    closest = min(all_date_objs, key=lambda d: abs((d - date_dt).days))
+    best_str = closest.strftime("%Y%m%d")
+    logger.info(f"Pattern: fallback. Requested {date_dt.date()} not found, using closest date {best_str} ({date_key_map[best_str]})")
+    return date_key_map[best_str]
     return None
 
 

@@ -88,6 +88,7 @@ if __name__ == "__main__":
     parser.add_argument("--start", type=str, help="Start date (YYYY-MM-DD)", default=None)
     parser.add_argument("--end", type=str, help="End date (YYYY-MM-DD)", default=None)
     parser.add_argument("--date", type=str, help="Single date to process (YYYY-MM-DD)", default=None)
+    parser.add_argument("--retry", type=int, help="Number of times to retry on error", default=2)
     
     args = parser.parse_args()
 
@@ -101,27 +102,41 @@ if __name__ == "__main__":
         # Default to full year if no arguments provided
         dates = pd.date_range("2022-01-01", "2022-12-31", freq="D")
 
-    # Pre-generate weights.nc to avoid race conditions in parallel
-    if gkeys:
-        first_date = dates[0]
-        first_gkey = gkeys[0]
-        print(f"Pre-generating weights using {first_gkey} on {first_date}")
-        process_gkey(first_date, first_gkey, elat, elon)
+    attempts = args.retry + 1
+    for attempt in range(attempts):
+        try:
+            # Pre-generate weights.nc to avoid race conditions in parallel
+            if gkeys:
+                first_date = dates[0]
+                first_gkey = gkeys[0]
+                print(f"Pre-generating weights using {first_gkey} on {first_date}")
+                process_gkey(first_date, first_gkey, elat, elon)
 
-    # Use Parallel to speed up processing (tune n_jobs as needed)
-    for date in dates: 
-        for gkey in gkeys:
-            process_gkey(date,gkey, elat, elon)
+            # Use Parallel to speed up processing (tune n_jobs as needed)
+            for date in dates: 
+                for gkey in gkeys:
+                    process_gkey(date,gkey, elat, elon)
 
-    # Parallel(n_jobs=3)(
-    #     delayed(process_pkey)(date, pkey, elat, elon)
-    #     for date in dates
-    #     for pkey in pkeys
-    # )
+            # Parallel(n_jobs=3)(
+            #     delayed(process_pkey)(date, pkey, elat, elon)
+            #     for date in dates
+            #     for pkey in pkeys
+            # )
 
-    for sector in gkeys + pkeys:
-        hcpath = f"epa2022v1/{sector}/HEMCO_{sector}.rc"
-        secttmpl = f"epa2022v1/{sector}/{sector}_%Y-%m-%d_epa2022v1_hc_22m.nc"
-        # Only write config if the directory exists (implying some files were processed)
-        if os.path.exists(os.path.dirname(hcpath)):
-            writeconfig(hcpath, 2022, sector, secttmpl)
+            for sector in gkeys: # + pkeys:
+                hcpath = f"epa2022v1/{sector}/HEMCO_{sector}.rc"
+                secttmpl = f"epa2022v1/{sector}/{sector}_%Y-%m-%d_epa2022v1_hc_22m.nc"
+                # Only write config if the directory exists (implying some files were processed)
+                if os.path.exists(os.path.dirname(hcpath)):
+                    writeconfig(hcpath, 2022, sector, secttmpl)
+            
+            # If we reach here, everything succeeded
+            break
+            
+        except Exception as e:
+            if attempt < attempts - 1:
+                print(f"**ERROR:: Workflow failed on attempt {attempt+1}: {e}")
+                print(f"Retrying ({attempt+2}/{attempts})...")
+            else:
+                print(f"**FATAL ERROR:: Workflow failed after {attempts} attempts: {e}")
+                raise e
